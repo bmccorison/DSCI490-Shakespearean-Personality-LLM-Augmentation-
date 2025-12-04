@@ -1,0 +1,2 @@
+# DSCI490---Shakespearean-Personality-LLM-Augmentation-
+This project aims to develop and evaluate methods for persona-consistent AI, testing whether LLMs can truly encapsulate true personal identities. Language Models will be created for Shakespeare’s works of “Hamlet” and “Macbeth”, creating models for four total characters and analyzing performance by test questions and two-way/four-way conversations.
