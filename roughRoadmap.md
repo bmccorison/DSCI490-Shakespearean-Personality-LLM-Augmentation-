@@ -6,10 +6,12 @@ These ideas will be converted into different milestones and GitHub issues from C
 
 - Understand how the HuggingFace API works (specifically with text-to-text transformer models)
 - Know the basics on transformer models/LLMs (baseline, will learn more as we go)
-- Build diagrams of the final pipeline (training, reinforcement, prompt engineering, RAG, etc. (**TBD**)). Should roughly understand what all of these do.
+- Test open source models on personal and HPCL hardware
+- Build diagrams of the final pipeline (training, reinforcement, prompt engineering, RAG, etc.(**TBD**)). Should roughly understand what all of these do.
 - Choose appropriate baseline open-weight models
   - Comprehensive enough to understand stuff, but not too big to where we can't run it
   - It would probably be best to aim for one smaller one (more for testing/dev) and a bigger one (prod), then we could also compare them at the end.
+- Read the *Hamlet* and *Macbeth* works
 
 ## Phase 2 - Data Aquisition, Exploration, Pre-processing, Benchmark Development (Weeks 2-4)
 
@@ -19,7 +21,6 @@ These ideas will be converted into different milestones and GitHub issues from C
 - Clean data (stuff like whitespaces and things that the parser didn't catch. **TBD** once texts are found)
 - Search for any additional helpful context for the model (this could be moved to phase 3 probably)
 - **Benchmark Development** (The big one)
-  - Read the plays (everyone)
   - **TBD** - Determining this will be a hard task, and initial benchmark development may bleed into phase 3. Would probably be best if it consisted of both training and testing benchmarks.
 
 ## Phase 3 - Initial Character-Conditioned Model Development (Weeks 4-7)

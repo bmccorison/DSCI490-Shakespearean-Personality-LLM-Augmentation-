@@ -1,0 +1,56 @@
+name: Test Python and Notebooks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  run-python-and-notebooks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install nbconvert jupyter
+
+      - name: Run Python scripts
+        shell: bash
+        run: |
+          set -e
+          mapfile -d '' py_files < <(find . -path "./.git" -prune -o -name "*.py" -type f -print0)
+          if [ ${#py_files[@]} -eq 0 ]; then
+            echo "No Python files found."
+          else
+            for file in "${py_files[@]}"; do
+              echo "Executing ${file}"
+              python "${file}"
+            done
+          fi
+
+      - name: Execute notebooks
+        shell: bash
+        run: |
+          set -e
+          mapfile -d '' notebooks < <(find . -path "./.git" -prune -o -name "*.ipynb" -type f -print0)
+          if [ ${#notebooks[@]} -eq 0 ]; then
+            echo "No notebooks found."
+          else
+            mkdir -p /tmp/nbconvert-output
+            for nb in "${notebooks[@]}"; do
+              echo "Executing ${nb}"
+              jupyter nbconvert --to notebook --execute "${nb}" --output-dir /tmp/nbconvert-output --output "$(basename "${nb%.ipynb}")-executed.ipynb"
+            done
+          fi
