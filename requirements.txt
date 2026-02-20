@@ -1,3 +1,13 @@
 transformers
+peft
 torch
 accelerate
+ipykernel
+numpy
+pandas
+scikit-learn
+matplotlib
+seaborn
+jupyterlab
+datasets
+tokenizers
