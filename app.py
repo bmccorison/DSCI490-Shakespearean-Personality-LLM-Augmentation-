@@ -3,18 +3,52 @@
 from fastapi import FastAPI
 import uvicorn
 import pipeline
-import pipeline.lm_generation as lm_generation
-import pipeline.data_ingestion as data_ingestion
+from pipeline.lm_generation import generate_response, refresh_chat_history, model_selection
+from pipeline.rag import get_context
+from pipeline.data_ingestion import data_ingestion
 
-app = FastAPI()
+# TODO: Refactor the support multiple chat histories and characters
+app = FastAPI()  # Initialize the FastAPI app
+model = None  # Placeholder for the LLM model, to be loaded in by user
+
 
 @app.get("/generate_response")
 def generate_response(question: str):
-    ''' Endpoint to generate a response from the LLM given a user question. '''
+    ''' Endpoint to trigger the response pipeline given a user question. '''
     # Ingest data for RAG context
-    rag_context = data_ingestion.ingest_data()
+    rag_context = get_context()
     
-    # Generate the response from the LLM
-    response = pipeline.lm_generation.generate_output(question, rag_context)
+    # Generate the response JSON from the LLM {response: str, confidence_score: int}
+    response_json = generate_response(question, rag_context)
     
-    return {"response": response}
+    return response_json
+
+
+@app.get("/refresh_chat")
+def refresh_chat():
+    ''' Endpoint to trigger the reset of the conversation history. '''
+    refresh_chat_history()
+    return {"message": "Chat history refreshed."}
+
+
+@app.get("/select_character")
+def select_character(character: str, work: str):
+    ''' Endpoint to select the character and work for the system prompt. '''
+    # TODO
+
+
+@app.get("/select_model")
+def select_model(model_name: str):
+    ''' Endpoint to select the specific LLM for response generation. '''
+    pass
+
+
+@app.get("/get_models"):
+def get_models():
+    ''' Endpoint to get the list of available models and adapters. '''
+    return model_selection()  # Return the full model list as a JSON
+
+if __name__ == "__main__":
+    # TODO initialize models, initialize vector stores, etc. here before starting the server
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+    

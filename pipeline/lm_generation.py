@@ -1,13 +1,14 @@
 ''' Placeholder for LLM pipeline functions '''
 
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from pipeline.rag import get_context
+from pathlib import Path
+
+from models.models import model_list
 
 # Declare a messages object to hold conversation history, loaded with the initial system prompt.
 # TODO: This will eventually need to be refactored to support multiple conversations and users, 
 # but for now we can just use a global variable to hold the conversation history for simplicity.
 messages: list[dict[str, str]] = [
-    {"role": "system", "content": get_system_prompt()}
+    {"role": "system", "content": "You are Hamlet from Shakespeare's work Hamlet."}
 ]
 
 
@@ -35,7 +36,7 @@ def get_system_prompt() -> str:
         Always use all available information to answer the question as accurately as possible.
         """
     )
-    
+
     
 def add_chat_history(user_msg=None, model_response=None):
     ''' Add the user message and/or model response to the conversation history. '''
@@ -44,8 +45,7 @@ def add_chat_history(user_msg=None, model_response=None):
     if model_response is not None:
         messages.append({"role": "assistant", "content": model_response})
 
-
-def refresh_chat_template():
+def refresh_chat_history():
     ''' Called when a new conversation starts to clear the conversation history. '''
     messages.clear()
 
@@ -70,3 +70,33 @@ def generate_output(question, tokenizer, model, context=None) -> str:
     # Generate a repsonse from the LLM and post-process it to extract the final response string
     final_response = generate_response(tokenized_chat, model)
     return final_response
+
+
+def model_selection():
+    ''' Placeholder for model selection code to return the list of available models and adapters. '''
+    return model_list()  # Return the list of available models and adapters from the models module
+
+
+def get_model(model_name: str, adapter_path: str):
+    ''' Load the base Hugging Face model and apply the proper PEFT adapter, then return the model. '''
+    
+    # Get the path from the repo root
+    repo_root = Path(__file__).resolve().parent.parent
+    resolved_adapter_path = Path(adapter_path)
+    if not resolved_adapter_path.is_absolute():
+        resolved_adapter_path = repo_root / resolved_adapter_path
+    if not resolved_adapter_path.exists():
+        raise FileNotFoundError(f"Adapter path does not exist: {resolved_adapter_path}")
+
+    # Load the base model
+    base_model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        device_map="auto" if torch.cuda.is_available() else None,
+    )
+    
+    # Add the LoRA adapter and return
+    model = PeftModel.from_pretrained(base_model, str(resolved_adapter_path))
+    model.eval()
+    return model
+    
