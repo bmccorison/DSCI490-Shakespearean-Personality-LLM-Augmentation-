@@ -1,15 +1,11 @@
-''' Placeholder for data ingestion code. '''
+''' Placeholder for data ingestion code for initial RAG vector store. '''
 
 def extract_data():
-    ''' Placeholder for data extraction code. '''
-    pass
-
-def transform_data():
-    ''' Placeholder for data transformation code. '''
+    ''' Placeholder for data extraction code (character profile) and transformations. '''
     pass
 
 
-def ingest_data():
-    ''' Main function to orchestrate data ingestion. '''
+def data_ingestion():
+    ''' Main function to orchestrate data ingestion of RAG context. '''
     extracted_df = extract_data()
-    return transform_data(extracted_df)
+    return extracted_df  # TODO: Convert to vector store and return the vector store for retrieval
