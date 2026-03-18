@@ -11,3 +11,4 @@ seaborn
 jupyterlab
 datasets
 tokenizers
+tts
