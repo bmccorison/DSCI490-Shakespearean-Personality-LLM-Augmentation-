@@ -3,12 +3,12 @@
 from fastapi import FastAPI, Response
 import uvicorn
 import pipeline
-from pipeline.lm_generation import generate_response, refresh_chat_history, model_selection
+from pipeline.lm_generation import generate_response, refresh_chat_history, model_selection, get_model
 from pipeline.rag import get_context
 from pipeline.data_ingestion import data_ingestion
+from bark import generate_audio, SAMPLE_RATE  # TTS (TODO may want to refactor to use voice cloning capable library)
+import scipy.io.wavfile as wav
 import io
-from TTS.api import TTS
-import soundfile as sf
 
 # TODO: Refactor the support multiple chat histories and characters
 app = FastAPI()  # Initialize the FastAPI app
@@ -41,9 +41,9 @@ def select_character(character: str, work: str):
 
 
 @app.get("/select_model")
-def select_model(model_name: str):
+def select_model(model_name: str, adapter_path: str):
     ''' Endpoint to select the specific LLM for response generation. '''
-    pass
+    model = get_model(model_name)  # Load the model and set it to the global variable
 
 
 @app.get("/get_models"):
@@ -55,16 +55,14 @@ def get_models():
 @app.post("/tts")
 def generate_tts(text: str, character: str = "Hamlet"):
     ''' Endpoint to generate TTS audio from the given text. '''
-    # Initialize the sound model (TODO make seperate voices for each character)
-    tts = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC")
-    audio = tts.tts(text)
-    
-    # Save the audio to a buffer and return it as a response
+    # Generate the speech (TODO make seperate voices for each character)
+    audio_array = generate_audio(text, history_prompt="v2/en_speaker_6", use_gpu=True)  # TODO: Refactor to use character specific voices (may need to switch TTS library to support voice cloning)
+
+    # Save to buffer to send over HTTP
     buffer = io.BytesIO()
-    sf.write(buffer, audio, 22050, format='WAV')
+    wav.write(buffer, SAMPLE_RATE, audio_array)
     buffer.seek(0)
     return Response(content=buffer.read(), media_type="audio/wav")
-
 
 if __name__ == "__main__":
     # TODO initialize models, initialize vector stores, etc. here before starting the server

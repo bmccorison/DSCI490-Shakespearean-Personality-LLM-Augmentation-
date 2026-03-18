@@ -11,4 +11,5 @@ seaborn
 jupyterlab
 datasets
 tokenizers
-tts
+setuptools
+bark
