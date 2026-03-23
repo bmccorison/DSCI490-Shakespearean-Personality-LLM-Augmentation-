@@ -1,0 +1,71 @@
+@import url("https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&display=swap");
+@import url("https://fonts.cdnfonts.com/css/hamletornot");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --maroon: #a52e30;
+  --gold: #fdd492;
+  --ink: #451415;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 5% 5%, rgba(253, 212, 146, 0.35), transparent 38%),
+    radial-gradient(circle at 95% 0%, rgba(165, 46, 48, 0.15), transparent 32%),
+    #ffffff;
+  color: var(--ink);
+  font-family: "Cormorant Garamond", serif;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+@keyframes messageEnter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes iconPop {
+  from {
+    transform: scale(0.9);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+.message-row {
+  animation: messageEnter 220ms ease-out;
+}
+
+.message-icon {
+  animation: iconPop 220ms ease-out;
+}
+
+.send-quill-btn {
+  transition:
+    transform 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.send-quill-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(165, 46, 48, 0.16);
+}
+
+.send-quill-btn:active {
+  transform: translateY(0) scale(0.97);
+}
