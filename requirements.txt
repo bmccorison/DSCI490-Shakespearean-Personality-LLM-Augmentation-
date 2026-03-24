@@ -12,4 +12,7 @@ jupyterlab
 datasets
 tokenizers
 setuptools
+fastapi
+pydantic
+uvicorn
 bark
