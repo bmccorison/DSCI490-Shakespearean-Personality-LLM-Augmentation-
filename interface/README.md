@@ -10,13 +10,13 @@ npm install
 npm run dev
 ```
 
-Backend expected at `http://127.0.0.1:8000` (proxied as `/api` in development).
+Backend expected at `http://127.0.0.1:8000` and served under the `/api` namespace.
 
 ## Endpoint Usage
 
-- `GET /generate_response` on message send
-- `GET /refresh_chat` on chat reset and startup
-- `GET /select_character` on character setup
-- `GET /select_model` on model setup
-- `GET /get_models` on startup and model reload
-- `POST /tts` on assistant voice playback
+- `GET /api/generate_response` on message send
+- `GET /api/refresh_chat` on chat reset and startup
+- `GET /api/select_character` on character setup
+- `GET /api/select_model` on model setup
+- `GET /api/get_models` on startup and model reload
+- `POST /api/tts` on assistant voice playback

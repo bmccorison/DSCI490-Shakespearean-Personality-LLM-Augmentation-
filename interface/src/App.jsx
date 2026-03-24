@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 const DEFAULT_WORK = "Hamlet";
+const STARTUP_RETRY_ATTEMPTS = 20;
+const STARTUP_RETRY_DELAY_MS = 1000;
 // TODO: Replace this static list with backend-provided character options.
 const CHARACTER_OPTIONS = ["Hamlet"];
 
@@ -60,7 +62,7 @@ async function apiGet(path, params) {
     }
   );
   if (!response.ok) {
-    throw new Error(`${path} failed (${response.status})`);
+    throw new Error(await getErrorMessage(response, path));
   }
 
   const contentType = response.headers.get("content-type") || "";
@@ -79,9 +81,35 @@ async function apiPostBlob(path, params) {
     }
   );
   if (!response.ok) {
-    throw new Error(`${path} failed (${response.status})`);
+    throw new Error(await getErrorMessage(response, path));
   }
   return response.blob();
+}
+
+async function getErrorMessage(response, path) {
+  const fallbackMessage = `${path} failed (${response.status})`;
+  const contentType = response.headers.get("content-type") || "";
+
+  if (contentType.includes("application/json")) {
+    try {
+      const payload = await response.json();
+      if (payload && typeof payload.detail === "string") {
+        return payload.detail;
+      }
+      if (payload && typeof payload.message === "string") {
+        return payload.message;
+      }
+    } catch {
+      return fallbackMessage;
+    }
+  }
+
+  try {
+    const text = await response.text();
+    return text || fallbackMessage;
+  } catch {
+    return fallbackMessage;
+  }
 }
 
 function parseAssistantReply(payload) {
@@ -95,23 +123,124 @@ function parseAssistantReply(payload) {
   return "The stage is silent.";
 }
 
-function getAdapters(model) {
-  if (!model || !Array.isArray(model.adapter_paths)) return [];
-  return model.adapter_paths
-    .map((entry, index) => {
-      if (!entry || typeof entry !== "object") return null;
-      const pair = Object.entries(entry).find(
-        ([key, value]) => key !== "description" && typeof value === "string"
+function normalizeModels(payload) {
+  if (!Array.isArray(payload)) return [];
+
+  return payload
+    .map((model) => {
+      if (!model || typeof model.name !== "string") {
+        return null;
+      }
+
+      const nextAdapters = Array.isArray(model.adapters)
+        ? model.adapters
+        : Array.isArray(model.adapter_paths)
+          ? model.adapter_paths.map((adapter) => {
+              if (!adapter || typeof adapter !== "object") {
+                return null;
+              }
+
+              const pair = Object.entries(adapter).find(
+                ([key, value]) => key !== "description" && typeof value === "string"
+              );
+              if (!pair) {
+                return null;
+              }
+
+              const [name, path] = pair;
+              return {
+                name,
+                path,
+                description:
+                  typeof adapter.description === "string" ? adapter.description : "",
+              };
+            })
+          : [];
+
+      const adapters = nextAdapters.filter(
+        (adapter) =>
+          adapter &&
+          typeof adapter.name === "string" &&
+          typeof adapter.path === "string" &&
+          adapter.path.length > 0
       );
-      if (!pair) return null;
-      const [name, path] = pair;
+
       return {
-        label: entry.description ? `${name} - ${entry.description}` : name,
-        value: path,
-        key: `${name}-${index}`,
+        name: model.name,
+        description:
+          typeof model.description === "string" ? model.description : "",
+        defaultAdapterPath:
+          typeof model.default_adapter_path === "string"
+            ? model.default_adapter_path
+            : "",
+        adapters,
       };
     })
-    .filter(Boolean);
+    .filter((model) => model && model.adapters.length > 0);
+}
+
+function resolveDefaultAdapterPath(model) {
+  if (!model || !Array.isArray(model.adapters) || model.adapters.length === 0) {
+    return "";
+  }
+
+  const preferredAdapter = model.adapters.find(
+    (adapter) => adapter.path === model.defaultAdapterPath
+  );
+  return preferredAdapter?.path || model.adapters[0].path;
+}
+
+function formatTimestamp(date = new Date()) {
+  return date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function isRetryableStartupError(error) {
+  const message = error?.message || "";
+  return (
+    message.length === 0 ||
+    /ECONNREFUSED|Failed to fetch|NetworkError|http proxy error|failed \(500\)|failed \(502\)|failed \(503\)|failed \(504\)/i.test(
+      message
+    )
+  );
+}
+
+async function retryStartupAction(action, options = {}) {
+  const { isCancelled, onRetry } = options;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= STARTUP_RETRY_ATTEMPTS; attempt += 1) {
+    if (isCancelled?.()) {
+      return null;
+    }
+
+    try {
+      return await action();
+    } catch (error) {
+      lastError = error;
+      if (
+        attempt === STARTUP_RETRY_ATTEMPTS ||
+        !isRetryableStartupError(error) ||
+        isCancelled?.()
+      ) {
+        throw error;
+      }
+
+      onRetry?.(attempt + 1, error);
+      await sleep(STARTUP_RETRY_DELAY_MS);
+    }
+  }
+
+  throw lastError;
 }
 
 export default function App() {
@@ -124,61 +253,155 @@ export default function App() {
   const [status, setStatus] = useState("Awaiting thy command.");
   const [error, setError] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [isApplyingModel, setIsApplyingModel] = useState(false);
   const [speakingId, setSpeakingId] = useState(null);
+  const [isAudioLoading, setIsAudioLoading] = useState(false);
+  const [isAudioPaused, setIsAudioPaused] = useState(false);
+  const [isShakespeareStyleEnabled, setIsShakespeareStyleEnabled] = useState(true);
+  const [activityLog, setActivityLog] = useState([]);
   const bottomRef = useRef(null);
+  const activeAudioRef = useRef(null);
+  const activeAudioUrlRef = useRef("");
+  const pendingModelApplyCountRef = useRef(0);
 
   const modelDetails = useMemo(
     () => models.find((model) => model.name === selectedModel),
     [models, selectedModel]
   );
-  const adapterOptions = useMemo(() => getAdapters(modelDetails), [modelDetails]);
+  const adapterOptions = useMemo(
+    () => modelDetails?.adapters ?? [],
+    [modelDetails]
+  );
+  const selectedAdapterDetails = useMemo(
+    () => adapterOptions.find((adapter) => adapter.path === selectedAdapter) ?? null,
+    [adapterOptions, selectedAdapter]
+  );
 
   useEffect(() => {
     if (adapterOptions.length === 0) {
       setSelectedAdapter("");
       return;
     }
-    if (!adapterOptions.some((item) => item.value === selectedAdapter)) {
-      setSelectedAdapter(adapterOptions[0].value);
+    if (!adapterOptions.some((item) => item.path === selectedAdapter)) {
+      setSelectedAdapter(adapterOptions[0].path);
     }
   }, [adapterOptions, selectedAdapter]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, isSending]);
+
+  const releaseActiveAudio = () => {
+    const activeAudio = activeAudioRef.current;
+    if (activeAudio) {
+      activeAudio.onended = null;
+      activeAudio.onerror = null;
+      activeAudio.onpause = null;
+      activeAudio.onplay = null;
+      activeAudio.pause();
+      activeAudioRef.current = null;
+    }
+
+    if (activeAudioUrlRef.current) {
+      URL.revokeObjectURL(activeAudioUrlRef.current);
+      activeAudioUrlRef.current = "";
+    }
+  };
+
+  const clearPlaybackState = () => {
+    setSpeakingId(null);
+    setIsAudioLoading(false);
+    setIsAudioPaused(false);
+  };
+
+  useEffect(() => {
+    return () => {
+      releaseActiveAudio();
+    };
+  }, []);
+
+  const recordActivity = (kind, detail) => {
+    const entry = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      kind,
+      detail,
+      timestamp: formatTimestamp(),
+    };
+
+    setActivityLog((previous) => [entry, ...previous].slice(0, 12));
+  };
+
+  const updateStatus = (nextStatus, kind = "status") => {
+    setStatus(nextStatus);
+    recordActivity(kind, nextStatus);
+  };
+
+  const reportError = (message, fallback = "Action failed.") => {
+    const nextError = message || fallback;
+    setError(nextError);
+    recordActivity("error", nextError);
+  };
 
   const refreshServerChat = async (showStatus = true) => {
-    await apiGet("/refresh_chat");
+    setError("");
+    releaseActiveAudio();
+    clearPlaybackState();
+    try {
+      await apiGet("/refresh_chat");
+    } catch (refreshError) {
+      await apiGet("/select_character", {
+        character,
+        work: DEFAULT_WORK,
+      });
+      recordActivity(
+        "refresh",
+        `Refresh fallback used after /refresh_chat failed: ${refreshError.message}`
+      );
+    }
     setMessages([]);
     if (showStatus) {
-      setStatus("Chat history refreshed.");
+      updateStatus("Chat history refreshed.", "refresh");
     }
   };
 
   const fetchModels = async (showStatus = true) => {
+    setError("");
     const payload = await apiGet("/get_models");
-    const modelList = Array.isArray(payload) ? payload : [];
+    const modelList = normalizeModels(payload);
     setModels(modelList);
 
-    if (modelList.length > 0 && !selectedModel) {
+    if (modelList.length === 0) {
+      setSelectedModel("");
+      setSelectedAdapter("");
+      if (showStatus) {
+        updateStatus("No loadable models are currently available.", "models");
+      }
+      return modelList;
+    }
+
+    if (!modelList.some((model) => model.name === selectedModel)) {
       setSelectedModel(modelList[0].name);
-      const defaultAdapter = getAdapters(modelList[0])[0]?.value || "";
+      const defaultAdapter = resolveDefaultAdapterPath(modelList[0]);
       setSelectedAdapter(defaultAdapter);
     }
 
     if (showStatus) {
-      setStatus(`Loaded ${modelList.length} model option(s).`);
+      updateStatus(`Loaded ${modelList.length} model option(s).`, "models");
     }
     return modelList;
   };
 
   const applyCharacter = async (nextCharacter = character, showStatus = true) => {
+    setError("");
+    releaseActiveAudio();
+    clearPlaybackState();
     await apiGet("/select_character", {
       character: nextCharacter,
       work: DEFAULT_WORK,
     });
+    setMessages([]);
     if (showStatus) {
-      setStatus(`Character set to ${nextCharacter}.`);
+      updateStatus(`Character set to ${nextCharacter}.`, "character");
     }
   };
 
@@ -187,37 +410,82 @@ export default function App() {
     nextAdapter = selectedAdapter,
     showStatus = true
   ) => {
-    await apiGet("/select_model", {
-      model_name: nextModel,
-      adapter_path: nextAdapter,
-    });
-    if (showStatus) {
-      setStatus(`Model selection submitted: ${nextModel}.`);
+    setError("");
+    if (!nextModel || !nextAdapter) {
+      throw new Error("Select a valid model and adapter before loading.");
+    }
+
+    const activeModel = models.find((model) => model.name === nextModel);
+    const activeAdapter = activeModel?.adapters.find(
+      (adapter) => adapter.path === nextAdapter
+    );
+
+    pendingModelApplyCountRef.current += 1;
+    setIsApplyingModel(true);
+    try {
+      await apiGet("/select_model", {
+        model_name: nextModel,
+        adapter_path: nextAdapter,
+      });
+      if (showStatus) {
+        updateStatus(
+          `Model selection submitted: ${nextModel} with ${
+            activeAdapter?.name || nextAdapter
+          }.`,
+          "model"
+        );
+      }
+    } finally {
+      pendingModelApplyCountRef.current = Math.max(
+        0,
+        pendingModelApplyCountRef.current - 1
+      );
+      if (pendingModelApplyCountRef.current === 0) {
+        setIsApplyingModel(false);
+      }
     }
   };
 
   const handleModelChange = (nextModel) => {
     setSelectedModel(nextModel);
     const nextModelDetails = models.find((model) => model.name === nextModel);
-    const nextAdapter = getAdapters(nextModelDetails)[0]?.value || "";
+    const nextAdapter = resolveDefaultAdapterPath(nextModelDetails);
     setSelectedAdapter(nextAdapter);
+    if (!nextAdapter) {
+      reportError("No loadable adapter is available for that model.");
+      return;
+    }
+
     applyModel(nextModel, nextAdapter).catch((applyError) =>
-      setError(applyError.message || "Model apply failed.")
+      reportError(applyError.message, "Model apply failed.")
     );
   };
 
   const handleAdapterChange = (nextAdapter) => {
     setSelectedAdapter(nextAdapter);
     applyModel(selectedModel, nextAdapter).catch((applyError) =>
-      setError(applyError.message || "Model apply failed.")
+      reportError(applyError.message, "Model apply failed.")
     );
   };
 
   const handleCharacterChange = (nextCharacter) => {
     setCharacter(nextCharacter);
     applyCharacter(nextCharacter).catch((characterError) =>
-      setError(characterError.message || "Character update failed.")
+      reportError(characterError.message, "Character update failed.")
     );
+  };
+
+  const handleStyleToggle = () => {
+    setIsShakespeareStyleEnabled((isEnabled) => {
+      const nextValue = !isEnabled;
+      updateStatus(
+        nextValue
+          ? "Shakespeare dialogue polish enabled."
+          : "Shakespeare dialogue polish disabled.",
+        "style"
+      );
+      return nextValue;
+    });
   };
 
   useEffect(() => {
@@ -225,32 +493,57 @@ export default function App() {
 
     const initialize = async () => {
       setError("");
-      setStatus("Preparing thy stage...");
+      updateStatus("Preparing thy stage...", "startup");
       try {
-        await refreshServerChat(false);
+        await retryStartupAction(() => applyCharacter("Hamlet", false), {
+          isCancelled: () => cancelled,
+          onRetry: (nextAttempt) => {
+            setStatus(
+              `Waiting for backend to start... retry ${nextAttempt}/${STARTUP_RETRY_ATTEMPTS}.`
+            );
+          },
+        });
         if (cancelled) return;
+        recordActivity("character", "Default character context applied.");
 
-        await applyCharacter("Hamlet", false);
+        const loadedModels = await retryStartupAction(() => fetchModels(false), {
+          isCancelled: () => cancelled,
+          onRetry: (nextAttempt) => {
+            setStatus(
+              `Backend reached. Loading models... retry ${nextAttempt}/${STARTUP_RETRY_ATTEMPTS}.`
+            );
+          },
+        });
         if (cancelled) return;
-
-        const loadedModels = await fetchModels(false);
-        if (cancelled) return;
+        recordActivity(
+          "models",
+          `Discovered ${loadedModels.length} loadable model option(s).`
+        );
 
         const firstModel = loadedModels[0];
-        if (firstModel?.name) {
-          const firstAdapter = getAdapters(firstModel)[0]?.value || "";
+        const firstAdapter = resolveDefaultAdapterPath(firstModel);
+        if (firstModel?.name && firstAdapter) {
           setSelectedModel(firstModel.name);
           setSelectedAdapter(firstAdapter);
           await applyModel(firstModel.name, firstAdapter, false);
+          recordActivity(
+            "model",
+            `Default model loaded: ${firstModel.name} using ${firstAdapter}.`
+          );
         }
 
         if (!cancelled) {
-          setStatus("Thy chatbot is ready.");
+          updateStatus(
+            firstModel?.name && firstAdapter
+              ? "Thy chatbot is ready."
+              : "No loadable models are currently available.",
+            "startup"
+          );
         }
       } catch (initError) {
         if (!cancelled) {
-          setError(initError.message || "Could not initialize interface.");
-          setStatus("Initialization finished with warnings.");
+          reportError(initError.message, "Could not initialize interface.");
+          updateStatus("Initialization finished with warnings.", "startup");
         }
       }
     };
@@ -264,7 +557,7 @@ export default function App() {
   const handleSend = async (event) => {
     event.preventDefault();
     const question = draft.trim();
-    if (!question || isSending) return;
+    if (!question || isSending || isApplyingModel) return;
 
     const userMessage = {
       id: `user-${Date.now()}`,
@@ -276,9 +569,14 @@ export default function App() {
     setDraft("");
     setIsSending(true);
     setError("");
+    recordActivity("message", `Prompt sent: ${question}`);
+    updateStatus("Hamlet is composing a reply...", "generation");
 
     try {
-      const payload = await apiGet("/generate_response", { question });
+      const payload = await apiGet("/generate_response", {
+        question,
+        shakespeare_style: isShakespeareStyleEnabled,
+      });
       const answerText = parseAssistantReply(payload);
       const confidence =
         payload && typeof payload.confidence_score !== "undefined"
@@ -293,10 +591,10 @@ export default function App() {
           content: `${answerText}${confidence}`,
         },
       ]);
-      setStatus("A reply hath arrived.");
+      updateStatus("A reply hath arrived.", "reply");
     } catch (sendError) {
-      setError(sendError.message || "Message send failed.");
-      setStatus("Reply failed.");
+      reportError(sendError.message, "Message send failed.");
+      updateStatus("Reply failed.", "error");
     } finally {
       setIsSending(false);
     }
@@ -304,20 +602,62 @@ export default function App() {
 
   const handleSpeak = async (messageId, text) => {
     setError("");
+    releaseActiveAudio();
     setSpeakingId(messageId);
+    setIsAudioLoading(true);
+    setIsAudioPaused(false);
+    updateStatus("Preparing spoken performance...", "speech");
     try {
       const audioBlob = await apiPostBlob("/tts", { text, character });
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
-      audio.onended = () => URL.revokeObjectURL(audioUrl);
-      audio.onerror = () => URL.revokeObjectURL(audioUrl);
+      activeAudioRef.current = audio;
+      activeAudioUrlRef.current = audioUrl;
+
+      audio.onended = () => {
+        releaseActiveAudio();
+        clearPlaybackState();
+      };
+      audio.onerror = () => {
+        releaseActiveAudio();
+        clearPlaybackState();
+      };
+      audio.onpause = () => {
+        if (!audio.ended) {
+          setIsAudioPaused(true);
+        }
+      };
+      audio.onplay = () => setIsAudioPaused(false);
       await audio.play();
-      setStatus("Thy line is now spoken aloud.");
+      updateStatus("Thy line is now spoken aloud.", "speech");
     } catch (ttsError) {
-      setError(ttsError.message || "Could not generate speech.");
-    } finally {
-      setSpeakingId(null);
+      releaseActiveAudio();
+      clearPlaybackState();
+      reportError(ttsError.message, "Could not generate speech.");
     }
+    setIsAudioLoading(false);
+  };
+
+  const handlePauseResume = async () => {
+    const activeAudio = activeAudioRef.current;
+    if (!activeAudio || speakingId === null) {
+      return;
+    }
+
+    if (activeAudio.paused) {
+      try {
+        await activeAudio.play();
+        setIsAudioPaused(false);
+        updateStatus("Speech resumed.", "speech");
+      } catch (resumeError) {
+        reportError(resumeError.message, "Could not resume speech.");
+      }
+      return;
+    }
+
+    activeAudio.pause();
+    setIsAudioPaused(true);
+    updateStatus("Speech paused.", "speech");
   };
 
   return (
@@ -343,6 +683,7 @@ export default function App() {
                 className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
                 value={selectedModel}
                 onChange={(event) => handleModelChange(event.target.value)}
+                disabled={models.length === 0}
               >
                 {models.map((model) => (
                   <option key={model.name} value={model.name}>
@@ -351,6 +692,9 @@ export default function App() {
                 ))}
                 {models.length === 0 && <option>No models available</option>}
               </select>
+              <p className="mt-1 min-h-10 text-sm text-maroon/75">
+                {modelDetails?.description || "No model description available."}
+              </p>
             </div>
 
             <div>
@@ -364,12 +708,16 @@ export default function App() {
                 disabled={adapterOptions.length === 0}
               >
                 {adapterOptions.map((adapter) => (
-                  <option key={adapter.key} value={adapter.value}>
-                    {adapter.label}
+                  <option key={adapter.path} value={adapter.path}>
+                    {adapter.name}
                   </option>
                 ))}
                 {adapterOptions.length === 0 && <option>No adapter</option>}
               </select>
+              <p className="mt-1 min-h-10 text-sm text-maroon/75">
+                {selectedAdapterDetails?.description ||
+                  "No adapter description available."}
+              </p>
             </div>
 
             <div>
@@ -390,23 +738,85 @@ export default function App() {
             </div>
           </div>
 
-          <div className="mt-3 flex items-center justify-between gap-3">
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm text-maroon/80">
               Selections apply automatically.
             </p>
-            <button
-              className="rounded-lg border border-maroon bg-white px-3 py-2 text-sm font-semibold text-maroon"
-              onClick={() =>
-                refreshServerChat().catch((refreshError) =>
-                  setError(refreshError.message || "Chat reset failed.")
-                )
-              }
-              type="button"
-            >
-              Refresh Chat
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
+                  isShakespeareStyleEnabled
+                    ? "border-maroon bg-maroon text-white"
+                    : "border-maroon bg-white text-maroon"
+                }`}
+                onClick={handleStyleToggle}
+                type="button"
+                aria-pressed={isShakespeareStyleEnabled}
+              >
+                Shakespeare Style: {isShakespeareStyleEnabled ? "On" : "Off"}
+              </button>
+              <button
+                className="rounded-lg border border-maroon bg-white px-3 py-2 text-sm font-semibold text-maroon"
+                onClick={() =>
+                  refreshServerChat().catch((refreshError) =>
+                    reportError(refreshError.message, "Chat reset failed.")
+                  )
+                }
+                type="button"
+              >
+                Refresh Chat
+              </button>
+            </div>
           </div>
         </details>
+      </section>
+
+      <section className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+        <article className="rounded-2xl border border-maroon/20 bg-white px-4 py-4 shadow-[0_6px_18px_rgba(69,20,21,0.08)]">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-maroon/60">
+            Current Status
+          </p>
+          <p className="mt-2 text-lg text-maroon">{status}</p>
+          {error && (
+            <p className="mt-3 rounded-xl border border-maroon/20 bg-maroon/5 px-3 py-2 text-sm text-maroon">
+              {error}
+            </p>
+          )}
+        </article>
+
+        <article className="rounded-2xl border border-maroon/20 bg-white px-4 py-4 shadow-[0_6px_18px_rgba(69,20,21,0.08)]">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-maroon/60">
+              Activity Log
+            </p>
+            <span className="text-xs text-maroon/60">
+              {activityLog.length} recent event{activityLog.length === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="mt-3 max-h-40 space-y-2 overflow-y-auto pr-1">
+            {activityLog.length === 0 && (
+              <p className="rounded-xl border border-dashed border-maroon/20 bg-parchment px-3 py-3 text-sm text-maroon/70">
+                Actions will appear here as the interface works.
+              </p>
+            )}
+            {activityLog.map((entry) => (
+              <div
+                key={entry.id}
+                className={`rounded-xl border px-3 py-2 text-sm ${
+                  entry.kind === "error"
+                    ? "border-maroon/30 bg-maroon/5 text-maroon"
+                    : "border-gold/50 bg-parchment text-maroon"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-semibold capitalize">{entry.kind}</span>
+                  <span className="text-xs text-maroon/60">{entry.timestamp}</span>
+                </div>
+                <p className="mt-1 leading-snug">{entry.detail}</p>
+              </div>
+            ))}
+          </div>
+        </article>
       </section>
 
       <section className="mt-6 flex flex-1 flex-col rounded-2xl border-2 border-maroon bg-parchment p-4 shadow-[0_8px_24px_rgba(165,46,48,0.12)]">
@@ -450,18 +860,55 @@ export default function App() {
                   {message.content}
                 </p>
                 {message.role === "assistant" && (
-                  <button
-                    className="mt-2 rounded-md border border-maroon px-2 py-1 text-sm font-medium text-maroon hover:bg-gold"
-                    onClick={() => handleSpeak(message.id, message.content)}
-                    type="button"
-                    disabled={speakingId === message.id}
-                  >
-                    {speakingId === message.id ? "Voicing..." : "Play Voice"}
-                  </button>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      className="rounded-md border border-maroon px-2 py-1 text-sm font-medium text-maroon hover:bg-gold disabled:cursor-not-allowed disabled:opacity-60"
+                      onClick={() => handleSpeak(message.id, message.content)}
+                      type="button"
+                      disabled={isAudioLoading && speakingId === message.id}
+                    >
+                      {isAudioLoading && speakingId === message.id
+                        ? "Voicing..."
+                        : speakingId === message.id && !isAudioPaused
+                          ? "Playing..."
+                          : "Play Voice"}
+                    </button>
+                    {speakingId === message.id && !isAudioLoading && (
+                      <button
+                        className="rounded-md border border-maroon px-2 py-1 text-sm font-medium text-maroon hover:bg-gold"
+                        onClick={handlePauseResume}
+                        type="button"
+                      >
+                        {isAudioPaused ? "Resume Voice" : "Pause Voice"}
+                      </button>
+                    )}
+                  </div>
                 )}
               </article>
             </div>
           ))}
+
+          {isSending && (
+            <div className="message-row mb-3 flex max-w-[96%] items-start gap-2">
+              <div className="message-icon mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
+                <RobotIcon className="h-5 w-5" />
+              </div>
+
+              <article className="typing-indicator max-w-[92%] rounded-xl border border-gold bg-white px-4 py-3 text-maroon">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold text-maroon/75">
+                    Hamlet is drafting
+                  </span>
+                  <div className="flex items-center gap-1.5" aria-hidden="true">
+                    <span className="typing-dot" />
+                    <span className="typing-dot typing-dot-delay-1" />
+                    <span className="typing-dot typing-dot-delay-2" />
+                  </div>
+                </div>
+              </article>
+            </div>
+          )}
+
           <div ref={bottomRef} />
         </div>
 
@@ -471,27 +918,39 @@ export default function App() {
             placeholder="What sayest thou?"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            disabled={isSending}
+            disabled={isSending || isApplyingModel}
           />
           <button
             type="submit"
-            disabled={isSending}
-            className="send-quill-btn inline-flex h-12 w-12 items-center justify-center rounded-lg border-2 border-gold bg-white shadow-sm transition hover:bg-gold/20 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={isSending || isApplyingModel}
+            className="send-quill-btn inline-flex h-12 min-w-12 items-center justify-center rounded-lg border-2 border-gold bg-white px-3 shadow-sm transition hover:bg-gold/20 disabled:cursor-not-allowed disabled:opacity-60"
             aria-label="Send message"
           >
-            <img
-              src="/quill.svg"
-              alt=""
-              className="h-7 w-7"
-              aria-hidden="true"
-            />
+            {isSending ? (
+              <span className="inline-flex items-center gap-2 text-sm font-semibold text-maroon">
+                <span className="loading-ripple" aria-hidden="true" />
+                Sending
+              </span>
+            ) : isApplyingModel ? (
+              <span className="inline-flex items-center gap-2 text-sm font-semibold text-maroon">
+                Applying
+              </span>
+            ) : (
+              <img
+                src="/quill.svg"
+                alt=""
+                className="h-7 w-7"
+                aria-hidden="true"
+              />
+            )}
           </button>
         </form>
       </section>
 
-      <footer className="mt-3 min-h-6 text-sm text-maroon/85">
-        <p>{status}</p>
-        {error && <p className="text-red-700">{error}</p>}
+      <footer className="mt-3 min-h-6 text-sm text-maroon/70">
+        <p>
+          Latest event: {activityLog[0]?.detail || status}
+        </p>
       </footer>
     </div>
   );

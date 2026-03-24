@@ -46,12 +46,63 @@ body {
   }
 }
 
+@keyframes dotBounce {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  40% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+@keyframes panelGlow {
+  0% {
+    box-shadow: 0 0 0 rgba(253, 212, 146, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(253, 212, 146, 0.12);
+  }
+  100% {
+    box-shadow: 0 0 0 rgba(253, 212, 146, 0);
+  }
+}
+
+@keyframes rippleSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .message-row {
   animation: messageEnter 220ms ease-out;
 }
 
 .message-icon {
   animation: iconPop 220ms ease-out;
+}
+
+.typing-indicator {
+  animation: panelGlow 1.8s ease-in-out infinite;
+}
+
+.typing-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background: var(--maroon);
+  animation: dotBounce 1s ease-in-out infinite;
+}
+
+.typing-dot-delay-1 {
+  animation-delay: 0.15s;
+}
+
+.typing-dot-delay-2 {
+  animation-delay: 0.3s;
 }
 
 .send-quill-btn {
@@ -68,4 +119,13 @@ body {
 
 .send-quill-btn:active {
   transform: translateY(0) scale(0.97);
+}
+
+.loading-ripple {
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid rgba(165, 46, 48, 0.2);
+  border-top-color: var(--maroon);
+  border-radius: 9999px;
+  animation: rippleSpin 0.8s linear infinite;
 }

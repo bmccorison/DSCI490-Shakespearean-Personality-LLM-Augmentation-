@@ -9,8 +9,18 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Override if needed, e.g.:
 # BACKEND_CMD="uvicorn app:app --host 0.0.0.0 --port 8000" ./runWebDemo.sh
 # FRONTEND_CMD="npm run dev -- --host 0.0.0.0 --port 5173" ./runWebDemo.sh
-BACKEND_CMD="${BACKEND_CMD:-python3 app.py}"
+if [[ -n "${BACKEND_CMD:-}" ]]; then
+  BACKEND_CMD="${BACKEND_CMD}"
+elif [[ -x "$ROOT_DIR/.venv/bin/python3" ]]; then
+  BACKEND_CMD="$ROOT_DIR/.venv/bin/python3 app.py"
+else
+  BACKEND_CMD="python3 app.py"
+fi
 FRONTEND_CMD="${FRONTEND_CMD:-npm run dev}"
+BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+BACKEND_READY_ATTEMPTS="${BACKEND_READY_ATTEMPTS:-20}"
+BACKEND_READY_DELAY_SECS="${BACKEND_READY_DELAY_SECS:-1}"
 
 # Set placeholders pids for clean shutdown
 backend_pid=""
@@ -32,6 +42,43 @@ shutdown_service() {
   fi
 
   wait "$pid" 2>/dev/null || true
+}
+
+wait_for_backend() {
+  local attempt
+
+  for ((attempt=1; attempt<=BACKEND_READY_ATTEMPTS; attempt++)); do
+    if ! kill -0 "$backend_pid" 2>/dev/null; then
+      return 1
+    fi
+
+    if BACKEND_HOST="$BACKEND_HOST" BACKEND_PORT="$BACKEND_PORT" python3 - <<'PY'
+import os
+import socket
+import sys
+
+host = os.environ["BACKEND_HOST"]
+port = int(os.environ["BACKEND_PORT"])
+
+sock = socket.socket()
+sock.settimeout(0.5)
+try:
+    sock.connect((host, port))
+except OSError:
+    sys.exit(1)
+finally:
+    sock.close()
+
+sys.exit(0)
+PY
+    then
+      return 0
+    fi
+
+    sleep "$BACKEND_READY_DELAY_SECS"
+  done
+
+  return 1
 }
 
 # Cleanup function to stop both services on exit
@@ -69,6 +116,13 @@ echo "Starting backend with: $BACKEND_CMD"
   bash -lc "$BACKEND_CMD"
 ) &
 backend_pid=$!
+
+echo "Waiting for backend on ${BACKEND_HOST}:${BACKEND_PORT}..."
+if wait_for_backend; then
+  echo "Backend is accepting connections."
+else
+  echo "Backend was not ready in time; starting frontend anyway."
+fi
 
 echo "Starting frontend with: $FRONTEND_CMD"
 (

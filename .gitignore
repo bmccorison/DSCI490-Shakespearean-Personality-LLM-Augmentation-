@@ -2,3 +2,4 @@
 *.venv
 interface/node_modules
 interface/dist
+*.codex
