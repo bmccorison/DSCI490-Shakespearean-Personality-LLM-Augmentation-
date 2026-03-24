@@ -2,13 +2,16 @@
 
 Any fine-tuning methods used when adapting the local LLMs.
 
-## `lora_3.ipynb`
+## `lora_3.py` (executable script)
 
-Notebook-based LoRA training workflow built around raw Hamlet text at:
+Script-based LoRA training workflow built around raw Hamlet text at:
 - `data/hamlet_onlyhamletraw.txt`
 
-This notebook uses HuggingFace + PEFT and keeps the full preprocessing,
-dataset-building, training, and inference workflow in one place.
+Run from repo root:
+- `python training/lora_3.py`
+
+This script uses HuggingFace + PEFT and keeps the full preprocessing,
+dataset-building, training, and inference workflow in one executable file.
 
 ### What it includes
 - Raw text parsing to extract Hamlet speeches from speaker-formatted play text.

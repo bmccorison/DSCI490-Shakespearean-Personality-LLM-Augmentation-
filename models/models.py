@@ -13,13 +13,18 @@ def model_list() -> list[dict]:
                 },
                 {
                     "name": "hamlet_lora_1",
-                    "path": "models/lora_finetuned_model1",
+                    "path": "models/lora_finetuned_model/checkpoint-270",
                     "description": "Early experimental LoRA adapter trained on Hamlet dialogue.",
                 },
                 {
                     "name": "hamlet_lora_2",
-                    "path": "models/lora_finetuned_model/checkpoint-270",
+                    "path": "models/lora_finetuned_model1",
                     "description": "Preferred LoRA adapter trained on the Hamlet character profile.",
+                },
+                {
+                    "name": "hamlet_lora_3",
+                    "path": "models/lora_hamlet_3",
+                    "description": "LoRA adapter trained on a mix of Hamlet dialogue and character profile.",  
                 },
             ],
         },
