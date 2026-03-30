@@ -36,6 +36,8 @@ ESPEAK_CHARACTER_VOICES = {
 
 _bark_generate_audio = None
 _bark_sample_rate = None
+_bark_preload_models = None
+_bark_models_preloaded = False
 _bark_load_error = None
 
 # TODO: Refactor the support multiple chat histories and characters
@@ -60,9 +62,10 @@ def _resolve_bark_use_gpu() -> bool:
 
 def _load_bark_dependencies():
     '''Import Bark lazily so the API can still start when TTS is unavailable.'''
-    global _bark_generate_audio, _bark_sample_rate, _bark_load_error
+    global _bark_generate_audio, _bark_sample_rate, _bark_preload_models, _bark_models_preloaded, _bark_load_error
 
     if _bark_generate_audio is not None and _bark_sample_rate is not None:
+        _preload_bark_models_if_needed()
         return _bark_generate_audio, _bark_sample_rate
 
     if _bark_load_error is not None:
@@ -81,7 +84,34 @@ def _load_bark_dependencies():
 
     _bark_generate_audio = bark_module.generate_audio
     _bark_sample_rate = bark_module.SAMPLE_RATE
+    _bark_preload_models = getattr(bark_module, "preload_models", None)
+    _preload_bark_models_if_needed()
     return _bark_generate_audio, _bark_sample_rate
+
+
+def _preload_bark_models_if_needed():
+    '''Preload Bark models once so CPU/GPU selection is applied via Bark's supported API.'''
+    global _bark_models_preloaded, _bark_load_error
+
+    if _bark_preload_models is None or _bark_models_preloaded:
+        return
+
+    try:
+        use_gpu = _resolve_bark_use_gpu()
+        _bark_preload_models(
+            text_use_gpu=use_gpu,
+            coarse_use_gpu=use_gpu,
+            fine_use_gpu=use_gpu,
+            codec_use_gpu=use_gpu,
+        )
+        _bark_models_preloaded = True
+    except Exception as exc:
+        _bark_load_error = (
+            "TTS backend is unavailable on this host. "
+            "Bark models could not be prepared. "
+            f"Original error: {exc}"
+        )
+        raise RuntimeError(_bark_load_error) from exc
 
 
 def _resolve_bark_history_prompt(character: str) -> str:
@@ -329,7 +359,6 @@ def generate_tts(text: str, character: str = "Hamlet"):
         audio_array = generate_audio(
             normalized_text,
             history_prompt=_resolve_bark_history_prompt(character),
-            use_gpu=_resolve_bark_use_gpu(),
         )  # TODO: Refactor to use character specific voices (may need to switch TTS library to support voice cloning)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"TTS generation failed: {exc}") from exc
