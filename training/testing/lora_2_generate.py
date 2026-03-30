@@ -44,17 +44,25 @@ print(f"Loading model on {device}...")
 tokenizer = AutoTokenizer.from_pretrained(ADAPTER_DIR)
 tokenizer.pad_token = tokenizer.eos_token
 
-base_model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME,
-    dtype=torch.bfloat16 if device == "cuda" else torch.float32,
-    device_map="auto" if device == "cuda" else None,
-)
+model_kwargs = {
+    "torch_dtype": (
+        torch.bfloat16
+        if device == "cuda" and torch.cuda.is_bf16_supported()
+        else (torch.float16 if device == "cuda" else torch.float32)
+    ),
+}
+if device == "cuda":
+    model_kwargs["device_map"] = "auto"
+
+base_model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, **model_kwargs)
 
 model = PeftModel.from_pretrained(
     base_model,
     ADAPTER_DIR,
     adapter_name="hamlet_adapter",
 )
+if device == "cpu":
+    model.to(device)
 model.eval()
 # Remove the model's default max_length so max_new_tokens is the sole limit
 model.generation_config.max_length = None
