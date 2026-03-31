@@ -117,9 +117,13 @@ def get_chat_template(tokenizer, usr_msg=None, context=None):
 def get_system_prompt() -> str:
     ''' Returns the system prompt for the conversation. '''
     return (
-        f"You are {current_character} from Shakespeare's work {current_work}. "
-        "Use the following retrieved context to answer the question as best as you can. "
-        "Always use all available information to answer the question as accurately as possible."
+        f"You are {current_character}, a character from Shakespeare's work {current_work}. "
+        f"You are speaking directly as {current_character}, not describing {current_character} from the outside. "
+        "Answer every user message in first person from the character's perspective. "
+        "Stay in character at all times and never refer to yourself as an AI assistant, chatbot, or language model. "
+        "Use any retrieved context as background knowledge about the character and work, "
+        "but write the final answer as the character's own words. "
+        "If something is uncertain, say so in character instead of inventing facts."
     )
 
 
@@ -519,6 +523,18 @@ def _is_base_model_adapter(adapter_path: str) -> bool:
     return adapter_path.strip() == BASE_MODEL_ADAPTER_PATH
 
 
+def _base_model_adapter_entry(configured_model: dict) -> dict[str, str]:
+    '''Build a synthetic adapter entry that targets the unmodified base model.'''
+    return {
+        "name": "base_model",
+        "path": BASE_MODEL_ADAPTER_PATH,
+        "description": configured_model.get(
+            "base_description",
+            "Base model without a LoRA adapter.",
+        ),
+    }
+
+
 def model_selection():
     ''' Model selection code to return the list of available models and adapters. '''
     available_models = []
@@ -555,13 +571,21 @@ def model_selection():
                 }
             )
 
+        if not adapters:
+            # Keep configured base models testable even when no adapter checkpoints exist.
+            adapters.append(_base_model_adapter_entry(configured_model))
+
         if adapters:
             # Only publish models that have at least one usable adapter target.
+            default_adapter_path = str(configured_model.get("default_adapter_path", "")).strip()
+            if not default_adapter_path:
+                default_adapter_path = adapters[0]["path"]
+
             available_models.append(
                 {
                     "name": configured_model["name"],
                     "description": configured_model.get("description", ""),
-                    "default_adapter_path": configured_model.get("default_adapter_path", ""),
+                    "default_adapter_path": default_adapter_path,
                     "adapters": adapters,
                 }
             )

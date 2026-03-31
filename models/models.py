@@ -31,6 +31,13 @@ def model_list() -> list[dict]:
         {
             "name": "LiquidAI/LFM2-8B-A1B",
             "description": "Larger 8B model good with creative writing",
-            "adapters": [],
+            "default_adapter_path": "models/lora_hamlet_4",
+            "adapters": [
+                {
+                    "name": "hamlet_lora_4",
+                    "path": "models/lora_hamlet_4",
+                    "description": "LoRA adapter trained on Hamlet speeches translated to modern English with the learned reverse translator.",
+                },
+            ],
         },
     ]
