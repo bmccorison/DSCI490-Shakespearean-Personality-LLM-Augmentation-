@@ -1,5 +1,6 @@
 ''' Placeholder for LLM pipeline functions '''
 
+import json
 import os
 import re
 from pathlib import Path
@@ -523,6 +524,41 @@ def _is_base_model_adapter(adapter_path: str) -> bool:
     return adapter_path.strip() == BASE_MODEL_ADAPTER_PATH
 
 
+def _normalize_model_id(model_id: str) -> str:
+    '''Normalize model identifiers for robust equality checks.'''
+    return model_id.strip().rstrip("/").lower()
+
+
+def _adapter_base_model_name(adapter_path: Path) -> str | None:
+    '''Return adapter-declared base model name from adapter_config.json when available.'''
+    config_path = adapter_path / "adapter_config.json"
+    if not config_path.exists():
+        return None
+
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    base_model_name = config.get("base_model_name_or_path")
+    if isinstance(base_model_name, str):
+        normalized_name = base_model_name.strip()
+        if normalized_name:
+            return normalized_name
+
+    return None
+
+
+def _is_adapter_compatible_with_model(model_name: str, adapter_path: Path) -> bool:
+    '''Validate adapter base model metadata against selected base model.'''
+    adapter_base_model = _adapter_base_model_name(adapter_path)
+    if adapter_base_model is None:
+        # If metadata is unavailable, defer compatibility check to PEFT load.
+        return True
+
+    return _normalize_model_id(adapter_base_model) == _normalize_model_id(model_name)
+
+
 def _base_model_adapter_entry(configured_model: dict) -> dict[str, str]:
     '''Build a synthetic adapter entry that targets the unmodified base model.'''
     return {
@@ -562,6 +598,9 @@ def model_selection():
             if not resolved_path.exists():
                 # Hide broken adapter entries from the frontend selector.
                 continue
+            if not _is_adapter_compatible_with_model(configured_model["name"], resolved_path):
+                # Hide adapters trained on a different base model to prevent runtime shape errors.
+                continue
 
             adapters.append(
                 {
@@ -578,7 +617,8 @@ def model_selection():
         if adapters:
             # Only publish models that have at least one usable adapter target.
             default_adapter_path = str(configured_model.get("default_adapter_path", "")).strip()
-            if not default_adapter_path:
+            available_adapter_paths = {adapter["path"] for adapter in adapters}
+            if not default_adapter_path or default_adapter_path not in available_adapter_paths:
                 default_adapter_path = adapters[0]["path"]
 
             available_models.append(
@@ -629,6 +669,12 @@ def get_model(model_name: str, adapter_path: str):
         resolved_adapter_path = resolve_adapter_path(selected_adapter_path)
         if not resolved_adapter_path.exists():
             raise FileNotFoundError(f"Adapter path does not exist: {resolved_adapter_path}")
+        if not _is_adapter_compatible_with_model(normalized_model_name, resolved_adapter_path):
+            adapter_base_model = _adapter_base_model_name(resolved_adapter_path)
+            raise ValueError(
+                "Adapter is incompatible with selected base model. "
+                f"Adapter expects '{adapter_base_model}', but selected model is '{normalized_model_name}'."
+            )
 
     # Prefer adapter-local tokenizer if available, otherwise fall back to base model tokenizer.
     tokenizer_source = (
@@ -657,7 +703,13 @@ def get_model(model_name: str, adapter_path: str):
         return base_model, tokenizer
 
     # Add the LoRA adapter and return
-    model = PeftModel.from_pretrained(base_model, str(resolved_adapter_path))
+    try:
+        model = PeftModel.from_pretrained(base_model, str(resolved_adapter_path))
+    except RuntimeError as exc:
+        raise ValueError(
+            "Failed to load adapter weights into the selected base model. "
+            "This adapter checkpoint is likely incompatible with the selected model architecture."
+        ) from exc
     model.eval()
     return model, tokenizer
 

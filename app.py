@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 import scipy.io.wavfile as wav
 import uvicorn
 
@@ -42,6 +43,17 @@ _bark_load_error = None
 
 # TODO: Refactor the support multiple chat histories and characters
 app = FastAPI()  # Initialize the FastAPI app
+default_cors_origins = "http://localhost:5173,http://127.0.0.1:5173"
+configured_cors_origins = os.getenv("CORS_ALLOW_ORIGINS", default_cors_origins)
+allowed_origins = [origin.strip() for origin in configured_cors_origins.split(",") if origin.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 model = None  # Placeholder for the LLM model, to be loaded in by user
 tokenizer = None
 
