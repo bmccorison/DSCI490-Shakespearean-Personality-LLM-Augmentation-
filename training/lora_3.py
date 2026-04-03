@@ -307,6 +307,9 @@ def format_roleplay_prompt(instruction: str) -> str:
     )
 
 
+MIN_RESPONSE_TOKENS = 32
+
+
 def tokenize_supervised_example(
     example: dict[str, str],
     tokenizer: AutoTokenizer,
@@ -317,9 +320,19 @@ def tokenize_supervised_example(
     prompt_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
     response_ids = tokenizer(response_text, add_special_tokens=False)["input_ids"]
 
+    # If the prompt alone exceeds MAX_LENGTH, truncate it to leave room for
+    # at least MIN_RESPONSE_TOKENS of the response.
+    max_prompt_tokens = MAX_LENGTH - MIN_RESPONSE_TOKENS
+    if len(prompt_ids) > max_prompt_tokens:
+        if max_prompt_tokens <= 0:
+            # MAX_LENGTH is too small to fit any prompt + response; skip.
+            return {"input_ids": [], "attention_mask": [], "labels": []}
+        prompt_ids = prompt_ids[:max_prompt_tokens]
+
     available_response_tokens = MAX_LENGTH - len(prompt_ids)
     if available_response_tokens <= 0:
-        raise ValueError("Prompt length exceeded MAX_LENGTH before adding response.")
+        # Should not happen after the truncation above, but guard anyway.
+        return {"input_ids": [], "attention_mask": [], "labels": []}
 
     response_ids = response_ids[:available_response_tokens]
     input_ids = prompt_ids + response_ids
@@ -825,11 +838,11 @@ def main() -> None:
     tokenized_train_dataset = train_dataset.map(
         lambda row: tokenize_supervised_example(row, tokenizer),
         remove_columns=train_dataset.column_names,
-    )
+    ).filter(lambda row: len(row["input_ids"]) > 0)
     tokenized_eval_dataset = eval_dataset.map(
         lambda row: tokenize_supervised_example(row, tokenizer),
         remove_columns=eval_dataset.column_names,
-    )
+    ).filter(lambda row: len(row["input_ids"]) > 0)
     data_collator = DataCollatorForSeq2Seq(
         tokenizer=tokenizer,
         model=model,

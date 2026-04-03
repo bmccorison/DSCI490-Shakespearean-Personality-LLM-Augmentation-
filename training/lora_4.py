@@ -11,6 +11,7 @@ import gc
 import os
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 
@@ -37,6 +38,11 @@ TRANSLATOR_MAX_OUTPUT_TOKENS = int(
 )
 TRANSLATOR_BEAM_WIDTH = int(os.environ.get("HAMLET_TRANSLATOR_BEAM_WIDTH", "4"))
 SPECIAL_TOKEN_RE = re.compile(r"\[(?:BOS|EOS|PAD|UNK)\]|</?s>")
+WORD_RE = re.compile(r"[A-Za-z']+")
+REVERSE_TRANSLATOR_SMOKE_TEST_TEXT = (
+    "i thought the king had more affected the duke of albany than cornwall."
+)
+_DEGENERATE_TRANSLATION_WARNING_EMITTED = False
 
 
 def _path_from_env(name: str) -> Path | None:
@@ -163,6 +169,8 @@ def load_reverse_translator():
         inp_file=paths["inp_sp_model_file"],
         tar_file=paths["tar_sp_model_file"],
     )
+    if not reverse_model_passes_smoke_test(model, inp_tokenizer, tar_tokenizer):
+        model = None
     return model, inp_tokenizer, tar_tokenizer
 
 
@@ -231,6 +239,88 @@ def clean_translated_text(text: str) -> str:
     return base_training.WHITESPACE_RE.sub(" ", cleaned).strip()
 
 
+def _rule_based_reverse_translation(text: str) -> str:
+    return clean_translated_text(base_training.shakespeare_to_plain_english(text))
+
+
+def _max_repeated_run(words: list[str]) -> int:
+    if not words:
+        return 0
+
+    longest_run = 1
+    current_run = 1
+    previous = words[0]
+
+    for word in words[1:]:
+        if word == previous:
+            current_run += 1
+            longest_run = max(longest_run, current_run)
+        else:
+            previous = word
+            current_run = 1
+
+    return longest_run
+
+
+def translation_looks_degenerate(translated_text: str, source_text: str) -> bool:
+    words = WORD_RE.findall(clean_translated_text(translated_text).lower())
+    if len(words) < 8:
+        return False
+
+    source_words = WORD_RE.findall(source_text.lower())
+    most_common_count = Counter(words).most_common(1)[0][1]
+    repeated_run = _max_repeated_run(words)
+    unique_ratio = len(set(words)) / len(words)
+
+    if repeated_run >= 4:
+        return True
+    if most_common_count >= max(4, len(words) // 3):
+        return True
+    if len(words) >= max(12, len(source_words)) and unique_ratio < 0.45:
+        return True
+    if len(words) > max(24, len(source_words) * 3):
+        return True
+    return False
+
+
+def warn_degenerate_translation_once(message: str) -> None:
+    global _DEGENERATE_TRANSLATION_WARNING_EMITTED
+    if _DEGENERATE_TRANSLATION_WARNING_EMITTED:
+        return
+
+    print(message)
+    _DEGENERATE_TRANSLATION_WARNING_EMITTED = True
+
+
+def reverse_model_passes_smoke_test(model, inp_tokenizer, tar_tokenizer) -> bool:
+    try:
+        translations, _ = reverse_translator.eager_beam_search(
+            REVERSE_TRANSLATOR_SMOKE_TEST_TEXT,
+            inp_tokenizer,
+            model,
+            K=max(1, TRANSLATOR_BEAM_WIDTH),
+            maxlen=min(48, TRANSLATOR_MAX_OUTPUT_TOKENS),
+        )
+        translated = tar_tokenizer.detokenize(translations[0]).numpy().decode("utf-8")
+        translated = clean_translated_text(translated)
+    except Exception as error:
+        warn_degenerate_translation_once(
+            "Reverse translator smoke test failed during model load; "
+            f"falling back to rule-based normalization. Error: {error}"
+        )
+        return False
+
+    if translation_looks_degenerate(translated, REVERSE_TRANSLATOR_SMOKE_TEST_TEXT):
+        warn_degenerate_translation_once(
+            "Reverse translator smoke test produced repetitive output; "
+            "falling back to rule-based normalization instead of using the "
+            f"checkpoint. Sample output: {translated[:160]!r}"
+        )
+        return False
+
+    return True
+
+
 def translate_segment(
     text: str,
     model,
@@ -245,6 +335,11 @@ def translate_segment(
     cached = cache.get(normalized)
     if cached is not None:
         return cached
+
+    if model is None:
+        translated = _rule_based_reverse_translation(normalized)
+        cache[normalized] = translated or normalized
+        return cache[normalized]
 
     token_budget = _token_count(normalized, inp_tokenizer)
     max_output_tokens = min(
@@ -268,6 +363,13 @@ def translate_segment(
             f"instead. Segment: {normalized[:120]!r}. Error: {error}"
         )
         translated = normalized
+
+    if translation_looks_degenerate(translated, normalized):
+        warn_degenerate_translation_once(
+            "Reverse translator produced repetitive output during segment "
+            "translation; using rule-based normalization for this run."
+        )
+        translated = _rule_based_reverse_translation(normalized)
 
     cache[normalized] = translated or normalized
     return cache[normalized]
@@ -520,11 +622,11 @@ def main() -> None:
     tokenized_train_dataset = train_dataset.map(
         lambda row: base_training.tokenize_supervised_example(row, tokenizer),
         remove_columns=train_dataset.column_names,
-    )
+    ).filter(lambda row: len(row["input_ids"]) > 0)
     tokenized_eval_dataset = eval_dataset.map(
         lambda row: base_training.tokenize_supervised_example(row, tokenizer),
         remove_columns=eval_dataset.column_names,
-    )
+    ).filter(lambda row: len(row["input_ids"]) > 0)
     data_collator = base_training.DataCollatorForSeq2Seq(
         tokenizer=tokenizer,
         model=model,
