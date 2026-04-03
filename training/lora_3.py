@@ -12,9 +12,9 @@ import re
 from pathlib import Path
 from typing import Iterable
 
-# Prefer CUDA's async allocator unless the caller already configured one.
+# Prefer expandable allocator segments unless the caller already configured one.
 if "PYTORCH_ALLOC_CONF" not in os.environ and "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "backend:cudaMallocAsync"
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
 from datasets import Dataset
@@ -532,21 +532,14 @@ def _load_causal_lm_with_quantized_dispatch_fallback(
             and model_load_kwargs.get("device_map") == "auto"
             and model_load_kwargs.get("max_memory") is not None
         ):
-            retry_kwargs = dict(model_load_kwargs)
-            retry_kwargs["quantization_config"] = _build_bnb_quantization_config(
-                load_in_4bit=False,
-                cpu_offload=True,
-            )
-            print(
-                "Retrying model load with 8-bit quantization and fp32 CPU "
-                "offload because this bitsandbytes build cannot auto-dispatch "
-                "4-bit Params4bit tensors."
-            )
-            torch.cuda.empty_cache()
-            return (
-                AutoModelForCausalLM.from_pretrained(model_name, **retry_kwargs),
-                retry_kwargs,
-            )
+            raise RuntimeError(
+                "bitsandbytes is installed, but this build cannot auto-dispatch "
+                "4-bit Params4bit tensors with the current Transformers/"
+                "Accelerate stack. This workflow now refuses to fall back to "
+                "8-bit fp32 CPU offload because that path is not viable on "
+                "tight VRAM budgets. Fix bitsandbytes/Transformers compatibility "
+                "or use a smaller base model."
+            ) from error
 
         retry_kwargs = dict(model_load_kwargs)
         retry_kwargs["device_map"] = {"": _active_cuda_device()}

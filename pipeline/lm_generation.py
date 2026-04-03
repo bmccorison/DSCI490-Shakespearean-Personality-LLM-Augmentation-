@@ -1,13 +1,24 @@
 ''' Placeholder for LLM pipeline functions '''
 
+import gc
 import json
 import os
 import re
 from pathlib import Path
 
+# Prefer the expandable allocator unless the caller already configured one.
+if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ and "PYTORCH_ALLOC_CONF" not in os.environ:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.utils import is_accelerate_available, is_bitsandbytes_available
+
+try:
+    from transformers import BitsAndBytesConfig
+except ImportError:
+    BitsAndBytesConfig = None
 
 from models.models import model_list
 
@@ -25,6 +36,10 @@ DEFAULT_TEMPERATURE = 0.7
 DEFAULT_TOP_P = 0.9
 DEFAULT_REPETITION_PENALTY = 1.15
 DEFAULT_NO_REPEAT_NGRAM_SIZE = 3
+DEFAULT_CPU_OFFLOAD_MAX_MEMORY = os.getenv("INFERENCE_CPU_OFFLOAD_MAX_MEMORY", "48GiB").strip()
+DEFAULT_CUDA_MEMORY_RESERVE_GIB = float(
+    os.getenv("INFERENCE_CUDA_MEMORY_RESERVE_GIB", "0.25")
+)
 SHAKESPEARE_STYLE_PATTERNS: tuple[tuple[str, str], ...] = (
     # Simple phrase substitutions used by the optional style-polish step.
     (r"\byou are\b", "thou art"),
@@ -208,6 +223,13 @@ def _trim_chat_history() -> None:
 
 def _resolve_model_device(model):
     ''' Best-effort lookup for the active model device. '''
+    input_embeddings = getattr(model, "get_input_embeddings", lambda: None)()
+    if input_embeddings is not None:
+        embedding_weight = getattr(input_embeddings, "weight", None)
+        embedding_device = getattr(embedding_weight, "device", None)
+        if embedding_device is not None:
+            return embedding_device
+
     model_device = getattr(model, "device", None)
     if model_device is not None:
         return model_device
@@ -330,10 +352,72 @@ def _mps_available() -> bool:
     return bool(mps.is_available())
 
 
+def _active_cuda_device() -> int:
+    '''Return the active CUDA device index when CUDA is available.'''
+    return int(torch.cuda.current_device())
+
+
+def _cleanup_cuda_memory() -> None:
+    '''Best-effort CUDA cache cleanup after unloading or failed loads.'''
+    if not _cuda_available():
+        return
+
+    torch.cuda.empty_cache()
+    if hasattr(torch.cuda, "ipc_collect"):
+        torch.cuda.ipc_collect()
+
+
+def _cuda_max_memory_map() -> dict[object, str] | None:
+    '''Build an accelerate max_memory map from currently free CUDA memory.'''
+    if not _cuda_available() or not hasattr(torch.cuda, "mem_get_info"):
+        return None
+
+    reserve_bytes = int(DEFAULT_CUDA_MEMORY_RESERVE_GIB * (1024**3))
+    max_memory: dict[object, str] = {"cpu": DEFAULT_CPU_OFFLOAD_MAX_MEMORY}
+
+    for device_index in range(torch.cuda.device_count()):
+        free_bytes, _ = torch.cuda.mem_get_info(device_index)
+        budget_bytes = max(0, free_bytes - reserve_bytes)
+        if budget_bytes <= 0:
+            continue
+
+        budget_mib = max(1, budget_bytes // (1024**2))
+        max_memory[device_index] = f"{budget_mib}MiB"
+
+    return max_memory if len(max_memory) > 1 else None
+
+
+def _build_bnb_quantization_config() -> BitsAndBytesConfig | None:
+    '''Return a 4-bit NF4 quantization config when bitsandbytes is available.'''
+    if BitsAndBytesConfig is None or not is_bitsandbytes_available():
+        return None
+
+    return BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=getattr(torch, "float16", getattr(torch, "float32", None)),
+    )
+
+
 def _model_load_config() -> tuple[str, dict]:
     '''Choose the best available device and dtype for local inference.'''
     # Highest-priority path: CUDA for GPU acceleration.
     if _cuda_available():
+        quantization_config = _build_bnb_quantization_config()
+        if quantization_config is not None:
+            model_load_kwargs: dict[str, object] = {
+                "quantization_config": quantization_config,
+            }
+            if is_accelerate_available():
+                model_load_kwargs["device_map"] = "auto"
+                max_memory = _cuda_max_memory_map()
+                if max_memory is not None:
+                    model_load_kwargs["max_memory"] = max_memory
+            else:
+                model_load_kwargs["device_map"] = {"": _active_cuda_device()}
+            return "cuda", model_load_kwargs
+
         model_load_kwargs = {
             "dtype": getattr(torch, "bfloat16", getattr(torch, "float16", None)),
             "device_map": "auto",
@@ -352,6 +436,23 @@ def _model_load_config() -> tuple[str, dict]:
         "dtype": getattr(torch, "float32", None),
     }
     return "cpu", {key: value for key, value in model_load_kwargs.items() if value is not None}
+
+
+def _load_base_model(model_name: str, model_load_kwargs: dict[str, object]):
+    '''Load a base causal LM with cleanup and a clearer OOM failure mode.'''
+    try:
+        return AutoModelForCausalLM.from_pretrained(model_name, **model_load_kwargs)
+    except torch.OutOfMemoryError as exc:
+        _cleanup_cuda_memory()
+        raise RuntimeError(
+            "CUDA ran out of memory while loading the selected model. "
+            "The server now unloads the previous model before swapping, but this "
+            "selection still does not fit in available VRAM. "
+            "Try the 2.6B model or free GPU memory and retry."
+        ) from exc
+    except RuntimeError:
+        _cleanup_cuda_memory()
+        raise
 
 
 def generate_response(
@@ -689,9 +790,9 @@ def get_model(model_name: str, adapter_path: str):
 
     # Load the base model
     preferred_device, model_load_kwargs = _model_load_config()
-    base_model = AutoModelForCausalLM.from_pretrained(
+    base_model = _load_base_model(
         normalized_model_name,
-        **model_load_kwargs,
+        model_load_kwargs,
     )
     if preferred_device == "mps" and hasattr(base_model, "to"):
         # MPS models need explicit transfer after loading.
@@ -706,6 +807,9 @@ def get_model(model_name: str, adapter_path: str):
     try:
         model = PeftModel.from_pretrained(base_model, str(resolved_adapter_path))
     except RuntimeError as exc:
+        del base_model
+        gc.collect()
+        _cleanup_cuda_memory()
         raise ValueError(
             "Failed to load adapter weights into the selected base model. "
             "This adapter checkpoint is likely incompatible with the selected model architecture."

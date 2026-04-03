@@ -1,5 +1,6 @@
 ''' Handle fastapi endpoints for the front-end interface. '''
 
+import gc
 import importlib
 import io
 import os
@@ -43,7 +44,7 @@ _bark_load_error = None
 
 # TODO: Refactor the support multiple chat histories and characters
 app = FastAPI()  # Initialize the FastAPI app
-default_cors_origins = "http://localhost:5173,http://127.0.0.1:5173"
+default_cors_origins = "http://localhost:6969,http://127.0.0.1:6969"
 configured_cors_origins = os.getenv("CORS_ALLOW_ORIGINS", default_cors_origins)
 allowed_origins = [origin.strip() for origin in configured_cors_origins.split(",") if origin.strip()]
 app.add_middleware(
@@ -56,6 +57,39 @@ app.add_middleware(
 
 model = None  # Placeholder for the LLM model, to be loaded in by user
 tokenizer = None
+loaded_model_name = ""
+loaded_adapter_path = ""
+
+
+def _release_loaded_model() -> None:
+    '''Release the currently loaded model/tokenizer and clear accelerator caches.'''
+    global model, tokenizer, loaded_model_name, loaded_adapter_path
+
+    previous_model = model
+    previous_tokenizer = tokenizer
+    model = None
+    tokenizer = None
+    loaded_model_name = ""
+    loaded_adapter_path = ""
+
+    if previous_model is None and previous_tokenizer is None:
+        return
+
+    del previous_model, previous_tokenizer
+    gc.collect()
+
+    try:
+        import torch
+    except Exception:
+        return
+
+    cuda = getattr(torch, "cuda", None)
+    if cuda is None or not hasattr(cuda, "is_available") or not cuda.is_available():
+        return
+
+    cuda.empty_cache()
+    if hasattr(cuda, "ipc_collect"):
+        cuda.ipc_collect()
 
 
 def _resolve_bark_use_gpu() -> bool:
@@ -281,7 +315,7 @@ def _generate_fallback_tts_audio(text: str, character: str = "Hamlet") -> bytes:
 
 
 @app.get("/api/generate_response")
-def generate_response_endpoint(question: str, shakespeare_style: bool = True):
+def generate_response_endpoint(question: str, shakespeare_style: bool = False):
     ''' Endpoint to trigger the response pipeline given a user question. '''
     global model, tokenizer
 
@@ -328,16 +362,36 @@ def select_character(character: str, work: str):
 @app.get("/api/select_model")
 def select_model(model_name: str, adapter_path: str):
     ''' Endpoint to select the specific LLM for response generation. '''
-    global model, tokenizer
+    global model, tokenizer, loaded_model_name, loaded_adapter_path
+
+    normalized_model_name = model_name.strip()
+    normalized_adapter_path = adapter_path.strip()
+    if (
+        model is not None
+        and tokenizer is not None
+        and loaded_model_name == normalized_model_name
+        and loaded_adapter_path == normalized_adapter_path
+    ):
+        return {
+            "message": "Model already loaded.",
+            "model_name": normalized_model_name,
+            "adapter_path": normalized_adapter_path,
+        }
+
+    _release_loaded_model()
     try:
-        model, tokenizer = get_model(model_name, adapter_path)  # Load and cache model artifacts
+        model, tokenizer = get_model(normalized_model_name, normalized_adapter_path)  # Load and cache model artifacts
+        loaded_model_name = normalized_model_name
+        loaded_adapter_path = normalized_adapter_path
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     return {
         "message": "Model loaded.",
-        "model_name": model_name.strip(),
-        "adapter_path": adapter_path.strip(),
+        "model_name": normalized_model_name,
+        "adapter_path": normalized_adapter_path,
     }
 
 

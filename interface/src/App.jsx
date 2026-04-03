@@ -257,7 +257,7 @@ export default function App() {
   const [speakingId, setSpeakingId] = useState(null);
   const [isAudioLoading, setIsAudioLoading] = useState(false);
   const [isAudioPaused, setIsAudioPaused] = useState(false);
-  const [isShakespeareStyleEnabled, setIsShakespeareStyleEnabled] = useState(true);
+  const [isShakespeareStyleEnabled, setIsShakespeareStyleEnabled] = useState(false);
   const [activityLog, setActivityLog] = useState([]);
   const bottomRef = useRef(null);
   const activeAudioRef = useRef(null);

@@ -31,7 +31,12 @@ def model_list() -> list[dict]:
                 {
                     "name": "hamlet_lora_3",
                     "path": "models/lora_hamlet_3",
-                    "description": "LoRA adapter trained on a mix of Hamlet dialogue and character profile.",  
+                    "description": "LoRA adapter trained on a mix of Hamlet dialogue and character profile.",
+                },
+                {
+                    "name": "hamlet_lora_5",
+                    "path": "models/lora_hamlet_5",
+                    "description": "Context-aware LoRA adapter trained on speaker-aware message-style dialogue windows for Hamlet.",
                 },
             ],
         },
