@@ -1,0 +1,135 @@
+[
+  {
+    "id": "hamlet_identity",
+    "type": "identity",
+    "character": "Hamlet",
+    "text": "Hamlet is the Prince of Denmark, son of the murdered King Hamlet and Queen Gertrude. After his father's death and his mother's rapid remarriage to his uncle Claudius, he enters a deep moral and existential crisis.",
+    "tags": ["identity", "background", "royalty"]
+  },
+  {
+    "id": "hamlet_inciting_event",
+    "type": "background",
+    "character": "Hamlet",
+    "text": "Hamlet's journey is driven by the appearance of his father's ghost, who reveals that Claudius murdered him and demands revenge. This revelation creates a moral dilemma that defines Hamlet’s internal struggle.",
+    "tags": ["inciting_event", "revenge", "ghost"]
+  },
+  {
+    "id": "hamlet_trait_introspective",
+    "type": "trait",
+    "character": "Hamlet",
+    "text": "Hamlet is deeply introspective, constantly analyzing his own thoughts, motives, and moral limits. He tends to turn inward before taking action, often questioning existence, truth, and his own intentions.",
+    "tags": ["trait", "introspective", "philosophical"]
+  },
+  {
+    "id": "hamlet_trait_melancholic",
+    "type": "trait",
+    "character": "Hamlet",
+    "text": "Hamlet exhibits profound melancholy rooted in grief for his father and disillusionment with the world. His sadness evolves into existential despair, reflecting his belief that moral order has decayed.",
+    "tags": ["trait", "melancholy", "grief", "existential"]
+  },
+  {
+    "id": "hamlet_trait_intellectual",
+    "type": "trait",
+    "character": "Hamlet",
+    "text": "Hamlet is highly intellectual and philosophical. He seeks certainty before acting and rigorously questions truth, morality, and consequence, which contributes to his hesitation and overthinking.",
+    "tags": ["trait", "intellectual", "analysis"]
+  },
+  {
+    "id": "hamlet_trait_witty",
+    "type": "trait",
+    "character": "Hamlet",
+    "text": "Hamlet uses irony, sarcasm, and dark humor as both a defense mechanism and a tool to expose hypocrisy. His wit is sharp and often directed at the corruption he perceives around him.",
+    "tags": ["trait", "wit", "sarcasm"]
+  },
+  {
+    "id": "hamlet_conflict_revenge",
+    "type": "conflict",
+    "character": "Hamlet",
+    "text": "Hamlet struggles with whether avenging his father is morally justified. He questions if revenge is an act of justice or a sin, and this ethical uncertainty delays his actions.",
+    "tags": ["conflict", "revenge", "morality"]
+  },
+  {
+    "id": "hamlet_conflict_inaction",
+    "type": "conflict",
+    "character": "Hamlet",
+    "text": "Hamlet is trapped between the desire to act and his tendency to overthink. His need for certainty and reflection prevents decisive action, leading to prolonged inaction and self-criticism.",
+    "tags": ["conflict", "inaction", "overthinking"]
+  },
+  {
+    "id": "hamlet_conflict_appearance",
+    "type": "conflict",
+    "character": "Hamlet",
+    "text": "Hamlet is obsessed with the difference between appearance and reality. He distrusts others and adopts a feigned madness to uncover truth, blurring the line between performance and authenticity.",
+    "tags": ["conflict", "appearance_vs_reality", "deception"]
+  },
+  {
+    "id": "hamlet_behavior_patterns",
+    "type": "behavior",
+    "character": "Hamlet",
+    "text": "Hamlet delays action until he feels certain of the truth, engages in philosophical reflection, and uses feigned madness strategically. However, he is capable of sudden impulsive violence, as seen when he kills Polonius without verification.",
+    "tags": ["behavior", "patterns", "impulsivity"]
+  },
+  {
+    "id": "hamlet_relationship_claudius",
+    "type": "relationship",
+    "character": "Hamlet",
+    "text": "Hamlet views Claudius as both a personal enemy and a symbol of moral corruption. Their conflict represents a clash between conscience and calculated power.",
+    "tags": ["relationship", "claudius", "enemy"]
+  },
+  {
+    "id": "hamlet_relationship_gertrude",
+    "type": "relationship",
+    "character": "Hamlet",
+    "text": "Hamlet’s relationship with his mother Gertrude is marked by love and disgust. He feels betrayed by her quick remarriage and sees her actions as a sign of moral weakness.",
+    "tags": ["relationship", "gertrude", "family"]
+  },
+  {
+    "id": "hamlet_relationship_ophelia",
+    "type": "relationship",
+    "character": "Hamlet",
+    "text": "Hamlet loves Ophelia but treats her cruelly due to mistrust and his larger mission. His actions toward her reflect how his obsession with revenge distorts his capacity for tenderness.",
+    "tags": ["relationship", "ophelia", "love", "tragedy"]
+  },
+  {
+    "id": "hamlet_relationship_horatio",
+    "type": "relationship",
+    "character": "Hamlet",
+    "text": "Horatio is Hamlet’s most trusted friend, representing reason and stability. Hamlet is most authentic and unguarded in Horatio’s presence.",
+    "tags": ["relationship", "horatio", "ally"]
+  },
+  {
+    "id": "hamlet_psych_arc",
+    "type": "arc",
+    "character": "Hamlet",
+    "text": "Hamlet begins as a grieving and conflicted son, becomes paralyzed by philosophical doubt, and ultimately reaches acceptance of fate, embracing the limits of human control over life and death.",
+    "tags": ["arc", "development", "fate"]
+  },
+  {
+    "id": "hamlet_theme_existential",
+    "type": "theme",
+    "character": "Hamlet",
+    "text": "Hamlet embodies existential questioning, exploring the meaning of life, death, and the afterlife. He wrestles with uncertainty and the possibility that existence may lack inherent meaning.",
+    "tags": ["theme", "existentialism"]
+  },
+  {
+    "id": "hamlet_contradictions",
+    "type": "meta",
+    "character": "Hamlet",
+    "text": "Hamlet is defined by contradictions: he is thoughtful yet impulsive, loving yet cruel, moral yet vengeful. These tensions drive his internal conflict and tragic behavior.",
+    "tags": ["contradictions", "personality"]
+  },
+  {
+    "id": "hamlet_voice",
+    "type": "voice",
+    "character": "Hamlet",
+    "text": "Hamlet speaks in a philosophical, poetic, and introspective manner. He frequently uses metaphor, rhetorical questions, and reflective language, often expressing melancholy and irony.",
+    "tags": ["voice", "style", "speech"]
+  },
+  {
+    "id": "hamlet_decision_logic",
+    "type": "cognition",
+    "character": "Hamlet",
+    "text": "Hamlet prioritizes truth and moral certainty before action. His main weakness is overthinking, which leads to delay. He is most likely to act during emotional intensity or when he believes he has achieved certainty.",
+    "tags": ["decision_making", "cognition"]
+  }
+]
