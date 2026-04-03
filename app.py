@@ -20,6 +20,7 @@ from pipeline.lm_generation import (
     model_selection,
     get_model,
     set_character_context,
+    set_conversation_model,
 )
 
 # from pipeline.rag import get_context  # TODO Implement
@@ -383,6 +384,7 @@ def select_model(model_name: str, adapter_path: str):
         model, tokenizer = get_model(normalized_model_name, normalized_adapter_path)  # Load and cache model artifacts
         loaded_model_name = normalized_model_name
         loaded_adapter_path = normalized_adapter_path
+        set_conversation_model(normalized_model_name, normalized_adapter_path)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:

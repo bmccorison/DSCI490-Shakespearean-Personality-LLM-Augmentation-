@@ -55,6 +55,20 @@ def parse_args(repo_root: Path) -> argparse.Namespace:
         help="Include the most recent prior turn from the target speaker in the context.",
     )
     parser.add_argument(
+        "--no-exclude-act5-scene2",
+        dest="exclude_act5_scene2",
+        action="store_false",
+        help="Disable Act 5 Scene 2 exclusion (default: enabled).",
+    )
+    parser.set_defaults(exclude_act5_scene2=True)
+    parser.add_argument(
+        "--no-prevent-scene-bleed",
+        dest="prevent_scene_bleed",
+        action="store_false",
+        help="Disable scene bleed prevention (default: enabled).",
+    )
+    parser.set_defaults(prevent_scene_bleed=True)
+    parser.add_argument(
         "--encoding",
         default="utf-8",
         help="Text encoding for input and output files.",
@@ -62,11 +76,22 @@ def parse_args(repo_root: Path) -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _is_act5_scene2(turn: full_play_translator.SpeechTurn) -> bool:
+    return (
+        turn.act is not None
+        and turn.act.split()[-1] == "5"
+        and turn.scene is not None
+        and turn.scene.split()[-1] == "2"
+    )
+
+
 def build_context_filtered_records(
     turns: list[full_play_translator.SpeechTurn],
     target_speaker: str,
     k: int,
     include_last_speaker_line: bool,
+    exclude_act5_scene2: bool = True,
+    prevent_scene_bleed: bool = True,
 ) -> list[dict[str, object]]:
     target_key = full_play_translator.speaker_key(target_speaker)
     records: list[dict[str, object]] = []
@@ -74,6 +99,9 @@ def build_context_filtered_records(
     last_target_turn: full_play_translator.SpeechTurn | None = None
 
     for turn in turns:
+        if exclude_act5_scene2 and _is_act5_scene2(turn):
+            break
+
         is_target_turn = full_play_translator.speaker_key(turn.speaker_raw) == target_key
         if not is_target_turn:
             history.append(turn)
@@ -81,12 +109,23 @@ def build_context_filtered_records(
 
         context_candidates: dict[int, full_play_translator.SpeechTurn] = {}
 
+        target_act = turn.act
+        target_scene = turn.scene
+
         if include_last_speaker_line and last_target_turn is not None:
-            context_candidates[last_target_turn.index] = last_target_turn
+            if not prevent_scene_bleed or (
+                last_target_turn.act == target_act and last_target_turn.scene == target_scene
+            ):
+                context_candidates[last_target_turn.index] = last_target_turn
 
         if k > 0:
             non_target_count = 0
             for previous_turn in reversed(history):
+                if prevent_scene_bleed and (
+                    previous_turn.act != target_act or previous_turn.scene != target_scene
+                ):
+                    break
+
                 if full_play_translator.speaker_key(previous_turn.speaker_raw) == target_key:
                     continue
 
@@ -122,6 +161,8 @@ def build_context_filtered_records(
                 "source_line": turn.source_line,
                 "k": k,
                 "include_last_speaker_line": include_last_speaker_line,
+                "exclude_act5_scene2": exclude_act5_scene2,
+                "prevent_scene_bleed": prevent_scene_bleed,
                 "context_turns": rendered_context_turns,
                 "context_text": context_text,
                 "response": turn.text,
@@ -158,6 +199,8 @@ def main() -> None:
         target_speaker=args.speaker,
         k=args.k,
         include_last_speaker_line=args.include_last_speaker_line,
+        exclude_act5_scene2=args.exclude_act5_scene2,
+        prevent_scene_bleed=args.prevent_scene_bleed,
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

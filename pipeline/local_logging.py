@@ -24,6 +24,14 @@ class LocalLogging:
         timestamp = self.created_at.strftime("%Y-%m-%d_%H-%M-%S")
         self.log_file = self.logging_dir / f"{timestamp}_{self.conversation_id}.json"
         self.messages: list[dict[str, Any]] = []
+        self.model_name: str = ""
+        self.adapter_path: str = ""
+
+    def set_model(self, model_name: str, adapter_path: str) -> None:
+        """Record which model and adapter are active for this conversation."""
+        self.model_name = model_name.strip()
+        self.adapter_path = adapter_path.strip()
+        self._flush()
 
     def append_message(self, message: dict[str, Any]) -> None:
         """Append one chat message and immediately persist the conversation."""
@@ -51,7 +59,12 @@ class LocalLogging:
             return
 
         self.logging_dir.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, Any] = {
+            "model": self.model_name,
+            "adapter": self.adapter_path,
+            "messages": self.messages,
+        }
         self.log_file.write_text(
-            json.dumps(self.messages, indent=2, ensure_ascii=False),
+            json.dumps(payload, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )

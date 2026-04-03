@@ -1,0 +1,10 @@
+[
+  {
+    "role": "user",
+    "content": "Hi Hamlet"
+  },
+  {
+    "role": "assistant",
+    "content": "Good morrow! I am Prince Hamlet of Denmark, heir to thy throne, though my heart lies heavy with doubt and sorrow. What troubles dost thou seek me to bear? Speak plainly, for time waits for no man nor wrath for sleep."
+  }
+]
