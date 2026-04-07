@@ -891,7 +891,7 @@ export default function App() {
           {isSending && (
             <div className="message-row mb-3 flex max-w-[96%] items-start gap-2">
               <div className="message-icon mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
-                <RobotIcon className="h-5 w-5" />
+                <img src="/crown.svg" className="h-5 w-5" alt="" />
               </div>
 
               <article className="typing-indicator max-w-[92%] rounded-xl border border-gold bg-white px-4 py-3 text-maroon">
