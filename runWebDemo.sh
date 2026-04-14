@@ -8,7 +8,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Override if needed, e.g.:
 # BACKEND_CMD="uvicorn app:app --host 0.0.0.0 --port 8000" ./runWebDemo.sh
-# FRONTEND_CMD="npm run dev -- --host 0.0.0.0 --port 5173" ./runWebDemo.sh
+# FRONTEND_CMD="npm run dev -- --host localhost --port 6969" ./runWebDemo.sh
 if [[ -n "${BACKEND_CMD:-}" ]]; then
   BACKEND_CMD="${BACKEND_CMD}"
 elif [[ -x "$ROOT_DIR/.venv/bin/python3" ]]; then

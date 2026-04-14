@@ -12,9 +12,9 @@ import re
 from pathlib import Path
 from typing import Iterable
 
-# Prefer CUDA's async allocator unless the caller already configured one.
+# Prefer expandable allocator segments unless the caller already configured one.
 if "PYTORCH_ALLOC_CONF" not in os.environ and "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "backend:cudaMallocAsync"
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
 from datasets import Dataset
@@ -307,6 +307,9 @@ def format_roleplay_prompt(instruction: str) -> str:
     )
 
 
+MIN_RESPONSE_TOKENS = 32
+
+
 def tokenize_supervised_example(
     example: dict[str, str],
     tokenizer: AutoTokenizer,
@@ -317,9 +320,19 @@ def tokenize_supervised_example(
     prompt_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
     response_ids = tokenizer(response_text, add_special_tokens=False)["input_ids"]
 
+    # If the prompt alone exceeds MAX_LENGTH, truncate it to leave room for
+    # at least MIN_RESPONSE_TOKENS of the response.
+    max_prompt_tokens = MAX_LENGTH - MIN_RESPONSE_TOKENS
+    if len(prompt_ids) > max_prompt_tokens:
+        if max_prompt_tokens <= 0:
+            # MAX_LENGTH is too small to fit any prompt + response; skip.
+            return {"input_ids": [], "attention_mask": [], "labels": []}
+        prompt_ids = prompt_ids[:max_prompt_tokens]
+
     available_response_tokens = MAX_LENGTH - len(prompt_ids)
     if available_response_tokens <= 0:
-        raise ValueError("Prompt length exceeded MAX_LENGTH before adding response.")
+        # Should not happen after the truncation above, but guard anyway.
+        return {"input_ids": [], "attention_mask": [], "labels": []}
 
     response_ids = response_ids[:available_response_tokens]
     input_ids = prompt_ids + response_ids
@@ -519,21 +532,14 @@ def _load_causal_lm_with_quantized_dispatch_fallback(
             and model_load_kwargs.get("device_map") == "auto"
             and model_load_kwargs.get("max_memory") is not None
         ):
-            retry_kwargs = dict(model_load_kwargs)
-            retry_kwargs["quantization_config"] = _build_bnb_quantization_config(
-                load_in_4bit=False,
-                cpu_offload=True,
-            )
-            print(
-                "Retrying model load with 8-bit quantization and fp32 CPU "
-                "offload because this bitsandbytes build cannot auto-dispatch "
-                "4-bit Params4bit tensors."
-            )
-            torch.cuda.empty_cache()
-            return (
-                AutoModelForCausalLM.from_pretrained(model_name, **retry_kwargs),
-                retry_kwargs,
-            )
+            raise RuntimeError(
+                "bitsandbytes is installed, but this build cannot auto-dispatch "
+                "4-bit Params4bit tensors with the current Transformers/"
+                "Accelerate stack. This workflow now refuses to fall back to "
+                "8-bit fp32 CPU offload because that path is not viable on "
+                "tight VRAM budgets. Fix bitsandbytes/Transformers compatibility "
+                "or use a smaller base model."
+            ) from error
 
         retry_kwargs = dict(model_load_kwargs)
         retry_kwargs["device_map"] = {"": _active_cuda_device()}
@@ -825,11 +831,11 @@ def main() -> None:
     tokenized_train_dataset = train_dataset.map(
         lambda row: tokenize_supervised_example(row, tokenizer),
         remove_columns=train_dataset.column_names,
-    )
+    ).filter(lambda row: len(row["input_ids"]) > 0)
     tokenized_eval_dataset = eval_dataset.map(
         lambda row: tokenize_supervised_example(row, tokenizer),
         remove_columns=eval_dataset.column_names,
-    )
+    ).filter(lambda row: len(row["input_ids"]) > 0)
     data_collator = DataCollatorForSeq2Seq(
         tokenizer=tokenizer,
         model=model,
