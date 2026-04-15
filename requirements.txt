@@ -2,6 +2,7 @@ transformers
 peft
 torch
 accelerate
+bitsandbytes
 ipykernel
 numpy
 pandas

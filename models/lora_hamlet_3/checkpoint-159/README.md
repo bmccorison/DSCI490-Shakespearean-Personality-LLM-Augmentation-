@@ -1,11 +1,6 @@
 ---
-base_model: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+base_model: LiquidAI/LFM2-2.6B
 library_name: peft
-pipeline_tag: text-generation
-tags:
-- base_model:adapter:TinyLlama/TinyLlama-1.1B-Chat-v1.0
-- lora
-- transformers
 ---
 
 # Model Card for Model ID
@@ -204,4 +199,4 @@ Carbon emissions can be estimated using the [Machine Learning Impact calculator]
 [More Information Needed]
 ### Framework versions
 
-- PEFT 0.18.1
+- PEFT 0.10.0

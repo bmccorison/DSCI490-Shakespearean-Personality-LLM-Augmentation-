@@ -21,16 +21,35 @@ def model_list() -> list[dict]:
                     "path": "models/lora_finetuned_model1",
                     "description": "Preferred LoRA adapter trained on the Hamlet character profile.",
                 },
+            ],
+        },
+        {
+            "name": "LiquidAI/LFM2-2.6B",
+            "description": "A 2.6B parameter model",
+            "default_adapter_path": "models/lora_hamlet_3",
+            "adapters": [
                 {
                     "name": "hamlet_lora_3",
                     "path": "models/lora_hamlet_3",
-                    "description": "LoRA adapter trained on a mix of Hamlet dialogue and character profile.",  
+                    "description": "LoRA adapter trained on a mix of Hamlet dialogue and character profile.",
+                },
+                {
+                    "name": "hamlet_lora_5",
+                    "path": "models/lora_hamlet_5",
+                    "description": "Context-aware LoRA adapter trained on speaker-aware message-style dialogue windows for Hamlet.",
                 },
             ],
         },
         {
             "name": "LiquidAI/LFM2-8B-A1B",
             "description": "Larger 8B model good with creative writing",
-            "adapters": [],
+            "default_adapter_path": "models/lora_hamlet_4",
+            "adapters": [
+                {
+                    "name": "hamlet_lora_4",
+                    "path": "models/lora_hamlet_4",
+                    "description": "LoRA adapter trained on Hamlet speeches translated to modern English with the learned reverse translator.",
+                },
+            ],
         },
     ]
