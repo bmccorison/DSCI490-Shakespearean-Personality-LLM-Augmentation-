@@ -21,6 +21,7 @@ except ImportError:
     BitsAndBytesConfig = None
 
 from models.models import model_list
+from pipeline.local_logging import LocalLogging
 
 # Resolve project-relative adapter paths from a stable repository root.
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -110,6 +111,7 @@ NO_REPEAT_NGRAM_SIZE = _read_int_setting(
 messages: list[dict[str, str]] = []
 current_character = DEFAULT_CHARACTER
 current_work = DEFAULT_WORK
+conversation_logger: LocalLogging | None = None
 
 
 def get_chat_template(tokenizer, usr_msg=None, context=None):
@@ -161,18 +163,32 @@ def set_character_context(character: str, work: str) -> None:
 
 def add_chat_history(user_msg=None, model_response=None):
     ''' Add the user message and/or model response to the conversation history. '''
+    global conversation_logger
+
     # Append whichever side of the turn was provided by caller.
     if user_msg is not None:
-        messages.append({"role": "user", "content": user_msg})
+        user_message = {"role": "user", "content": user_msg}
+        messages.append(user_message)
+        if conversation_logger is not None:
+            conversation_logger.append_message(user_message)
     if model_response is not None:
-        messages.append({"role": "assistant", "content": model_response})
+        assistant_message = {"role": "assistant", "content": model_response}
+        messages.append(assistant_message)
+        if conversation_logger is not None:
+            conversation_logger.append_message(assistant_message)
     # Keep prompt size bounded so response latency stays predictable.
     _trim_chat_history()
 
 def refresh_chat_history():
     ''' Called when a new conversation starts to clear the conversation history. '''
+    global conversation_logger
+
     messages.clear()
-    messages.append({"role": "system", "content": get_system_prompt()})
+    system_message = {"role": "system", "content": get_system_prompt()}
+    messages.append(system_message)
+
+    conversation_logger = LocalLogging()
+    conversation_logger.append_message(system_message)
 
 
 def _render_prompt_messages(prompt_messages: list[dict[str, str]]) -> str:
