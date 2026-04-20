@@ -161,6 +161,15 @@ def set_character_context(character: str, work: str) -> None:
     refresh_chat_history()
 
 
+def _ensure_conversation_logger() -> LocalLogging:
+    '''Start local logging only after the first user message arrives.'''
+    global conversation_logger
+
+    if conversation_logger is None:
+        conversation_logger = LocalLogging()
+    return conversation_logger
+
+
 def add_chat_history(user_msg=None, model_response=None):
     ''' Add the user message and/or model response to the conversation history. '''
     global conversation_logger
@@ -169,8 +178,7 @@ def add_chat_history(user_msg=None, model_response=None):
     if user_msg is not None:
         user_message = {"role": "user", "content": user_msg}
         messages.append(user_message)
-        if conversation_logger is not None:
-            conversation_logger.append_message(user_message)
+        _ensure_conversation_logger().append_message(user_message)
     if model_response is not None:
         assistant_message = {"role": "assistant", "content": model_response}
         messages.append(assistant_message)
@@ -178,6 +186,7 @@ def add_chat_history(user_msg=None, model_response=None):
             conversation_logger.append_message(assistant_message)
     # Keep prompt size bounded so response latency stays predictable.
     _trim_chat_history()
+
 
 def refresh_chat_history():
     ''' Called when a new conversation starts to clear the conversation history. '''
@@ -187,8 +196,7 @@ def refresh_chat_history():
     system_message = {"role": "system", "content": get_system_prompt()}
     messages.append(system_message)
 
-    conversation_logger = LocalLogging()
-    conversation_logger.append_message(system_message)
+    conversation_logger = None
 
 
 def _render_prompt_messages(prompt_messages: list[dict[str, str]]) -> str:

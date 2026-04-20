@@ -17,29 +17,41 @@ class LocalLogging:
     """Persist one conversation to a timestamped JSON file on disk."""
 
     def __init__(self, logging_dir: Path | None = None):
-        self.logging_dir = logging_dir or DEFAULT_LOGGING_DIR
-        self.logging_dir.mkdir(parents=True, exist_ok=True)
-
         self.created_at = datetime.now()
+        logging_root = logging_dir or DEFAULT_LOGGING_DIR
+        self.logging_dir = logging_root / f"{self.created_at.month}_{self.created_at.day}"
         self.conversation_id = uuid4().hex
         timestamp = self.created_at.strftime("%Y-%m-%d_%H-%M-%S")
         self.log_file = self.logging_dir / f"{timestamp}_{self.conversation_id}.json"
         self.messages: list[dict[str, Any]] = []
-        self._flush()
 
     def append_message(self, message: dict[str, Any]) -> None:
         """Append one chat message and immediately persist the conversation."""
-        self.messages.append(dict(message))
+        serialized_message = dict(message)
+        if serialized_message.get("role") == "system":
+            return
+
+        self.messages.append(serialized_message)
         self._flush()
 
     def replace_messages(self, messages: list[dict[str, Any]]) -> None:
         """Replace the stored conversation payload and persist it."""
-        self.messages = [dict(message) for message in messages]
+        filtered_messages: list[dict[str, Any]] = []
+        for message in messages:
+            serialized_message = dict(message)
+            if serialized_message.get("role") == "system":
+                continue
+            filtered_messages.append(serialized_message)
+
+        self.messages = filtered_messages
         self._flush()
 
     def _flush(self) -> None:
+        if not self.messages:
+            return
+
+        self.logging_dir.mkdir(parents=True, exist_ok=True)
         self.log_file.write_text(
             json.dumps(self.messages, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-
