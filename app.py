@@ -437,5 +437,6 @@ def generate_tts(text: str, character: str = "Hamlet"):
 
 if __name__ == "__main__":
     # TODO initialize models, initialize vector stores, etc. here before starting the server
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    backend_port = int(os.getenv("BACKEND_PORT", os.getenv("PORT", "8000")))
+    uvicorn.run(app, host="0.0.0.0", port=backend_port)
     
