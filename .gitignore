@@ -4,3 +4,5 @@ interface/node_modules
 interface/dist
 *.codex
 tests/
+**__pycache__/
+*.pyc
