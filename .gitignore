@@ -3,4 +3,5 @@
 interface/node_modules
 interface/dist
 *.codex
+**AGENTS.md
 tests/

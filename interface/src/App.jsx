@@ -6,6 +6,11 @@ const STARTUP_RETRY_ATTEMPTS = 20;
 const STARTUP_RETRY_DELAY_MS = 1000;
 // TODO: Replace this static list with backend-provided character options.
 const CHARACTER_OPTIONS = ["Hamlet"];
+const MULTIMODEL_CHARACTER_DEFAULTS = ["Hamlet", "Ophelia", "Macbeth", "Lady Macbeth"];
+const MULTIMODEL_MIN_SPEAKERS = 2;
+const MULTIMODEL_MAX_SPEAKERS = 4;
+const MULTIMODEL_DEFAULT_MAX_TURNS = 12;
+const MULTIMODEL_HARD_MAX_TURNS = 20;
 
 function RobotIcon({ className = "h-5 w-5" }) {
   return (
@@ -61,6 +66,25 @@ async function apiGet(path, params) {
       method: "GET",
     }
   );
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, path));
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return response.json();
+  }
+  return response.text();
+}
+
+async function apiPostJson(path, payload = {}) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
   if (!response.ok) {
     throw new Error(await getErrorMessage(response, path));
   }
@@ -190,6 +214,33 @@ function resolveDefaultAdapterPath(model) {
   return preferredAdapter?.path || model.adapters[0].path;
 }
 
+function createMultiModelParticipant(index, modelList = []) {
+  const defaultModel = modelList[0] ?? null;
+  return {
+    name: `Speaker ${index + 1}`,
+    character:
+      MULTIMODEL_CHARACTER_DEFAULTS[index] || `Character ${index + 1}`,
+    work: DEFAULT_WORK,
+    model_name: defaultModel?.name || "",
+    adapter_path: resolveDefaultAdapterPath(defaultModel),
+  };
+}
+
+function normalizeMultiModelConfig(payload) {
+  const hardMaxTurns =
+    Number(payload?.hard_max_turns) || MULTIMODEL_HARD_MAX_TURNS;
+  const defaultMaxTurns =
+    Number(payload?.default_max_turns) || MULTIMODEL_DEFAULT_MAX_TURNS;
+  return {
+    defaultMaxTurns: Math.min(Math.max(1, defaultMaxTurns), hardMaxTurns),
+    hardMaxTurns,
+    minParticipants:
+      Number(payload?.min_participants) || MULTIMODEL_MIN_SPEAKERS,
+    maxParticipants:
+      Number(payload?.max_participants) || MULTIMODEL_MAX_SPEAKERS,
+  };
+}
+
 function formatTimestamp(date = new Date()) {
   return date.toLocaleTimeString([], {
     hour: "2-digit",
@@ -258,11 +309,32 @@ export default function App() {
   const [isAudioLoading, setIsAudioLoading] = useState(false);
   const [isAudioPaused, setIsAudioPaused] = useState(false);
   const [isShakespeareStyleEnabled, setIsShakespeareStyleEnabled] = useState(false);
+  const [multiModelConfig, setMultiModelConfig] = useState({
+    defaultMaxTurns: MULTIMODEL_DEFAULT_MAX_TURNS,
+    hardMaxTurns: MULTIMODEL_HARD_MAX_TURNS,
+    minParticipants: MULTIMODEL_MIN_SPEAKERS,
+    maxParticipants: MULTIMODEL_MAX_SPEAKERS,
+  });
+  const [multiInitialPrompt, setMultiInitialPrompt] = useState(
+    "Debate whether action or patience better serves Denmark."
+  );
+  const [multiMaxTurns, setMultiMaxTurns] = useState(MULTIMODEL_DEFAULT_MAX_TURNS);
+  const [multiSpeakerCount, setMultiSpeakerCount] = useState(MULTIMODEL_MIN_SPEAKERS);
+  const [multiParticipants, setMultiParticipants] = useState(() =>
+    Array.from({ length: MULTIMODEL_MIN_SPEAKERS }, (_, index) =>
+      createMultiModelParticipant(index)
+    )
+  );
+  const [multiTurns, setMultiTurns] = useState([]);
+  const [multiStatus, setMultiStatus] = useState("Configure speakers to begin.");
+  const [multiError, setMultiError] = useState("");
+  const [isMultiRunning, setIsMultiRunning] = useState(false);
   const [activityLog, setActivityLog] = useState([]);
   const bottomRef = useRef(null);
   const activeAudioRef = useRef(null);
   const activeAudioUrlRef = useRef("");
   const pendingModelApplyCountRef = useRef(0);
+  const multiStopRequestedRef = useRef(false);
 
   const modelDetails = useMemo(
     () => models.find((model) => model.name === selectedModel),
@@ -276,6 +348,10 @@ export default function App() {
     () => adapterOptions.find((adapter) => adapter.path === selectedAdapter) ?? null,
     [adapterOptions, selectedAdapter]
   );
+  const visibleMultiParticipants = useMemo(
+    () => multiParticipants.slice(0, multiSpeakerCount),
+    [multiParticipants, multiSpeakerCount]
+  );
 
   useEffect(() => {
     if (adapterOptions.length === 0) {
@@ -286,6 +362,33 @@ export default function App() {
       setSelectedAdapter(adapterOptions[0].path);
     }
   }, [adapterOptions, selectedAdapter]);
+
+  useEffect(() => {
+    if (models.length === 0) {
+      return;
+    }
+
+    setMultiParticipants((previous) =>
+      previous.map((participant, index) => {
+        const currentModel = models.find(
+          (model) => model.name === participant.model_name
+        );
+        const modelDetailsForParticipant = currentModel ?? models[0];
+        const adapterStillValid = modelDetailsForParticipant.adapters.some(
+          (adapter) => adapter.path === participant.adapter_path
+        );
+
+        return {
+          ...participant,
+          model_name: modelDetailsForParticipant.name,
+          adapter_path: adapterStillValid
+            ? participant.adapter_path
+            : resolveDefaultAdapterPath(modelDetailsForParticipant),
+          name: participant.name || `Speaker ${index + 1}`,
+        };
+      })
+    );
+  }, [models]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -391,6 +494,24 @@ export default function App() {
     return modelList;
   };
 
+  const fetchMultiModelConfig = async () => {
+    const payload = await apiGet("/multimodel/config");
+    const config = normalizeMultiModelConfig(payload);
+    setMultiModelConfig(config);
+    setMultiMaxTurns(config.defaultMaxTurns);
+    return config;
+  };
+
+  const saveMultiModelConfig = async (nextMaxTurns) => {
+    const payload = await apiPostJson("/multimodel/config", {
+      max_turns: nextMaxTurns,
+    });
+    const config = normalizeMultiModelConfig(payload);
+    setMultiModelConfig(config);
+    setMultiMaxTurns(config.defaultMaxTurns);
+    return config;
+  };
+
   const applyCharacter = async (nextCharacter = character, showStatus = true) => {
     setError("");
     releaseActiveAudio();
@@ -488,6 +609,179 @@ export default function App() {
     });
   };
 
+  const parseMultiMaxTurns = () => {
+    const parsedTurns = Number(multiMaxTurns);
+    if (!Number.isFinite(parsedTurns)) {
+      throw new Error("Model conversation turn limit must be a number.");
+    }
+    const wholeTurns = Math.floor(parsedTurns);
+    if (wholeTurns < 1 || wholeTurns > multiModelConfig.hardMaxTurns) {
+      throw new Error(
+        `Turn limit must be between 1 and ${multiModelConfig.hardMaxTurns}.`
+      );
+    }
+    return wholeTurns;
+  };
+
+  const handleSaveMultiMaxTurns = async () => {
+    setMultiError("");
+    try {
+      const savedConfig = await saveMultiModelConfig(parseMultiMaxTurns());
+      setMultiStatus(
+        `Default model conversation limit saved at ${savedConfig.defaultMaxTurns} turn(s).`
+      );
+      recordActivity(
+        "multimodel",
+        `Default model conversation limit saved: ${savedConfig.defaultMaxTurns}.`
+      );
+    } catch (configError) {
+      setMultiError(configError.message);
+      recordActivity("error", configError.message);
+    }
+  };
+
+  const updateMultiParticipant = (index, updates) => {
+    setMultiParticipants((previous) =>
+      previous.map((participant, participantIndex) =>
+        participantIndex === index ? { ...participant, ...updates } : participant
+      )
+    );
+  };
+
+  const handleMultiModelChange = (index, nextModelName) => {
+    const nextModelDetails = models.find((model) => model.name === nextModelName);
+    updateMultiParticipant(index, {
+      model_name: nextModelName,
+      adapter_path: resolveDefaultAdapterPath(nextModelDetails),
+    });
+  };
+
+  const handleMultiSpeakerCountChange = (nextCountValue) => {
+    const parsedCount = Number(nextCountValue);
+    const boundedCount = Math.min(
+      Math.max(parsedCount, multiModelConfig.minParticipants),
+      multiModelConfig.maxParticipants
+    );
+    setMultiSpeakerCount(boundedCount);
+    setMultiParticipants((previous) => {
+      const nextParticipants = [...previous];
+      while (nextParticipants.length < boundedCount) {
+        nextParticipants.push(
+          createMultiModelParticipant(nextParticipants.length, models)
+        );
+      }
+      return nextParticipants;
+    });
+  };
+
+  const buildMultiStartPayload = () => {
+    const initialPrompt = multiInitialPrompt.trim();
+    if (!initialPrompt) {
+      throw new Error("Enter an initial prompt for the model conversation.");
+    }
+
+    const participants = visibleMultiParticipants.map((participant) => ({
+      name: participant.name.trim(),
+      character: participant.character.trim(),
+      work: participant.work.trim() || DEFAULT_WORK,
+      model_name: participant.model_name.trim(),
+      adapter_path: participant.adapter_path.trim(),
+    }));
+    const incompleteParticipant = participants.find(
+      (participant) =>
+        !participant.name ||
+        !participant.character ||
+        !participant.model_name ||
+        !participant.adapter_path
+    );
+    if (incompleteParticipant) {
+      throw new Error("Each speaker needs a name, character, model, and adapter.");
+    }
+
+    return {
+      initial_prompt: initialPrompt,
+      max_turns: parseMultiMaxTurns(),
+      shakespeare_style: isShakespeareStyleEnabled,
+      participants,
+    };
+  };
+
+  const handleStartMultiConversation = async () => {
+    if (isMultiRunning || isSending || isApplyingModel) {
+      return;
+    }
+
+    let startPayload;
+    try {
+      startPayload = buildMultiStartPayload();
+    } catch (validationError) {
+      setMultiError(validationError.message);
+      return;
+    }
+
+    setMultiError("");
+    setMultiTurns([]);
+    setIsMultiRunning(true);
+    multiStopRequestedRef.current = false;
+    releaseActiveAudio();
+    clearPlaybackState();
+    setMultiStatus("Starting model conversation...");
+    recordActivity("multimodel", "Model conversation started.");
+
+    try {
+      await saveMultiModelConfig(startPayload.max_turns);
+      let session = await apiPostJson("/multimodel/start", startPayload);
+      setMultiTurns(Array.isArray(session.turns) ? session.turns : []);
+
+      while (
+        !multiStopRequestedRef.current &&
+        session?.status === "running" &&
+        session.turn_count < startPayload.max_turns
+      ) {
+        const nextSpeakerName = session.next_speaker?.name || "Next speaker";
+        setMultiStatus(`${nextSpeakerName} is composing...`);
+        session = await apiPostJson("/multimodel/next");
+        if (Array.isArray(session.turns)) {
+          setMultiTurns(session.turns);
+        }
+        if (session.last_turn?.speaker_name) {
+          recordActivity(
+            "multimodel",
+            `${session.last_turn.speaker_name} added turn ${session.last_turn.turn_number}.`
+          );
+        }
+      }
+
+      if (multiStopRequestedRef.current || session?.status === "stopped") {
+        setMultiStatus("Model conversation stopped.");
+      } else {
+        setMultiStatus(
+          `Model conversation complete at ${session?.turn_count || 0} turn(s).`
+        );
+      }
+    } catch (conversationError) {
+      setMultiError(conversationError.message);
+      recordActivity("error", conversationError.message);
+      setMultiStatus("Model conversation failed.");
+    } finally {
+      setIsMultiRunning(false);
+    }
+  };
+
+  const handleStopMultiConversation = async () => {
+    multiStopRequestedRef.current = true;
+    setMultiStatus("Stopping after the current turn...");
+    try {
+      const session = await apiPostJson("/multimodel/stop");
+      if (Array.isArray(session.turns)) {
+        setMultiTurns(session.turns);
+      }
+    } catch (stopError) {
+      setMultiError(stopError.message);
+      recordActivity("error", stopError.message);
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
 
@@ -505,6 +799,19 @@ export default function App() {
         });
         if (cancelled) return;
         recordActivity("character", "Default character context applied.");
+
+        try {
+          const config = await fetchMultiModelConfig();
+          recordActivity(
+            "multimodel",
+            `Model conversation limit set to ${config.defaultMaxTurns} turn(s).`
+          );
+        } catch (configError) {
+          recordActivity(
+            "multimodel",
+            `Using default model conversation limit after config failed: ${configError.message}`
+          );
+        }
 
         const loadedModels = await retryStartupAction(() => fetchModels(false), {
           isCancelled: () => cancelled,
@@ -557,7 +864,7 @@ export default function App() {
   const handleSend = async (event) => {
     event.preventDefault();
     const question = draft.trim();
-    if (!question || isSending || isApplyingModel) return;
+    if (!question || isSending || isApplyingModel || isMultiRunning) return;
 
     const userMessage = {
       id: `user-${Date.now()}`,
@@ -683,7 +990,7 @@ export default function App() {
                 className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
                 value={selectedModel}
                 onChange={(event) => handleModelChange(event.target.value)}
-                disabled={models.length === 0}
+                disabled={models.length === 0 || isMultiRunning}
               >
                 {models.map((model) => (
                   <option key={model.name} value={model.name}>
@@ -705,7 +1012,7 @@ export default function App() {
                 className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
                 value={selectedAdapter}
                 onChange={(event) => handleAdapterChange(event.target.value)}
-                disabled={adapterOptions.length === 0}
+                disabled={adapterOptions.length === 0 || isMultiRunning}
               >
                 {adapterOptions.map((adapter) => (
                   <option key={adapter.path} value={adapter.path}>
@@ -728,6 +1035,7 @@ export default function App() {
                 className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
                 value={character}
                 onChange={(event) => handleCharacterChange(event.target.value)}
+                disabled={isMultiRunning}
               >
                 {CHARACTER_OPTIONS.map((name) => (
                   <option key={name} value={name}>
@@ -752,6 +1060,7 @@ export default function App() {
                 onClick={handleStyleToggle}
                 type="button"
                 aria-pressed={isShakespeareStyleEnabled}
+                disabled={isMultiRunning}
               >
                 Shakespeare Style: {isShakespeareStyleEnabled ? "On" : "Off"}
               </button>
@@ -763,12 +1072,265 @@ export default function App() {
                   )
                 }
                 type="button"
+                disabled={isMultiRunning}
               >
                 Refresh Chat
               </button>
             </div>
           </div>
         </details>
+      </section>
+
+      <section className="mt-4 rounded-2xl border-2 border-maroon bg-white p-4 shadow-[0_8px_24px_rgba(165,46,48,0.1)]">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold text-maroon">
+              Model Conversation
+            </h2>
+            <p className="mt-1 text-sm text-maroon/75">
+              Configure two to four speakers, then let them answer each other in order.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="rounded-lg border border-maroon bg-maroon px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={handleStartMultiConversation}
+              type="button"
+              disabled={
+                isMultiRunning ||
+                isSending ||
+                isApplyingModel ||
+                models.length === 0
+              }
+            >
+              {isMultiRunning ? "Running" : "Start Conversation"}
+            </button>
+            <button
+              className="rounded-lg border border-maroon bg-white px-3 py-2 text-sm font-semibold text-maroon disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={handleStopMultiConversation}
+              type="button"
+              disabled={!isMultiRunning}
+            >
+              Stop
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_13rem_12rem]">
+          <label className="block">
+            <span className="text-sm font-medium text-maroon">
+              Initial prompt
+            </span>
+            <textarea
+              className="mt-1 min-h-24 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon placeholder:text-maroon/50"
+              value={multiInitialPrompt}
+              onChange={(event) => setMultiInitialPrompt(event.target.value)}
+              disabled={isMultiRunning}
+            />
+          </label>
+
+          <label className="block">
+            <span className="text-sm font-medium text-maroon">
+              Speakers
+            </span>
+            <select
+              className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+              value={multiSpeakerCount}
+              onChange={(event) =>
+                handleMultiSpeakerCountChange(event.target.value)
+              }
+              disabled={isMultiRunning}
+            >
+              {Array.from(
+                {
+                  length:
+                    multiModelConfig.maxParticipants -
+                    multiModelConfig.minParticipants +
+                    1,
+                },
+                (_, index) => multiModelConfig.minParticipants + index
+              ).map((count) => (
+                <option key={count} value={count}>
+                  {count}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div>
+            <label className="block">
+              <span className="text-sm font-medium text-maroon">
+                Max turns
+              </span>
+              <input
+                className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                type="number"
+                min="1"
+                max={multiModelConfig.hardMaxTurns}
+                value={multiMaxTurns}
+                onChange={(event) => setMultiMaxTurns(event.target.value)}
+                disabled={isMultiRunning}
+              />
+            </label>
+            <button
+              className="mt-2 w-full rounded-lg border border-maroon bg-white px-3 py-2 text-sm font-semibold text-maroon disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={handleSaveMultiMaxTurns}
+              type="button"
+              disabled={isMultiRunning}
+            >
+              Save Limit
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {visibleMultiParticipants.map((participant, index) => {
+            const participantModel = models.find(
+              (model) => model.name === participant.model_name
+            );
+            const participantAdapters = participantModel?.adapters ?? [];
+
+            return (
+              <article
+                key={`${index}-${participant.name}`}
+                className="rounded-xl border border-maroon/20 bg-parchment p-3"
+              >
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <label className="block">
+                    <span className="text-sm font-medium text-maroon">
+                      Speaker
+                    </span>
+                    <input
+                      className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                      value={participant.name}
+                      onChange={(event) =>
+                        updateMultiParticipant(index, {
+                          name: event.target.value,
+                        })
+                      }
+                      disabled={isMultiRunning}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-sm font-medium text-maroon">
+                      Character
+                    </span>
+                    <input
+                      className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                      value={participant.character}
+                      onChange={(event) =>
+                        updateMultiParticipant(index, {
+                          character: event.target.value,
+                        })
+                      }
+                      disabled={isMultiRunning}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-sm font-medium text-maroon">
+                      Work
+                    </span>
+                    <input
+                      className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                      value={participant.work}
+                      onChange={(event) =>
+                        updateMultiParticipant(index, {
+                          work: event.target.value,
+                        })
+                      }
+                      disabled={isMultiRunning}
+                    />
+                  </label>
+                </div>
+
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <label className="block">
+                    <span className="text-sm font-medium text-maroon">
+                      Model
+                    </span>
+                    <select
+                      className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                      value={participant.model_name}
+                      onChange={(event) =>
+                        handleMultiModelChange(index, event.target.value)
+                      }
+                      disabled={isMultiRunning || models.length === 0}
+                    >
+                      {models.map((model) => (
+                        <option key={model.name} value={model.name}>
+                          {model.name}
+                        </option>
+                      ))}
+                      {models.length === 0 && <option>No models available</option>}
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="text-sm font-medium text-maroon">
+                      Adapter
+                    </span>
+                    <select
+                      className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                      value={participant.adapter_path}
+                      onChange={(event) =>
+                        updateMultiParticipant(index, {
+                          adapter_path: event.target.value,
+                        })
+                      }
+                      disabled={isMultiRunning || participantAdapters.length === 0}
+                    >
+                      {participantAdapters.map((adapter) => (
+                        <option key={adapter.path} value={adapter.path}>
+                          {adapter.name}
+                        </option>
+                      ))}
+                      {participantAdapters.length === 0 && <option>No adapter</option>}
+                    </select>
+                  </label>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+
+        <div className="mt-4 grid gap-3 lg:grid-cols-[16rem_minmax(0,1fr)]">
+          <aside className="rounded-xl border border-maroon/20 bg-parchment p-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-maroon/60">
+              Conversation Status
+            </p>
+            <p className="mt-2 text-base text-maroon">{multiStatus}</p>
+            {multiError && (
+              <p className="mt-3 rounded-lg border border-maroon/20 bg-white px-3 py-2 text-sm text-maroon">
+                {multiError}
+              </p>
+            )}
+          </aside>
+
+          <div className="max-h-80 overflow-y-auto rounded-xl border border-maroon/20 bg-parchment p-3">
+            {multiTurns.length === 0 && (
+              <p className="py-8 text-center text-base text-maroon/70">
+                Generated model turns will appear here.
+              </p>
+            )}
+            {multiTurns.map((turn) => (
+              <article
+                key={`${turn.turn_number}-${turn.speaker_name}`}
+                className="mb-3 rounded-xl border border-gold bg-white px-4 py-3 text-maroon last:mb-0"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-semibold">
+                    {turn.speaker_name} as {turn.character}
+                  </p>
+                  <span className="text-sm text-maroon/60">
+                    Turn {turn.turn_number}
+                  </span>
+                </div>
+                <p className="mt-2 whitespace-pre-wrap text-lg leading-relaxed">
+                  {turn.content}
+                </p>
+              </article>
+            ))}
+          </div>
+        </div>
       </section>
 
       <section className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
@@ -918,11 +1480,11 @@ export default function App() {
             placeholder="What sayest thou?"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            disabled={isSending || isApplyingModel}
+            disabled={isSending || isApplyingModel || isMultiRunning}
           />
           <button
             type="submit"
-            disabled={isSending || isApplyingModel}
+            disabled={isSending || isApplyingModel || isMultiRunning}
             className="send-quill-btn inline-flex h-12 min-w-12 items-center justify-center rounded-lg border-2 border-gold bg-white px-3 shadow-sm transition hover:bg-gold/20 disabled:cursor-not-allowed disabled:opacity-60"
             aria-label="Send message"
           >
@@ -934,6 +1496,10 @@ export default function App() {
             ) : isApplyingModel ? (
               <span className="inline-flex items-center gap-2 text-sm font-semibold text-maroon">
                 Applying
+              </span>
+            ) : isMultiRunning ? (
+              <span className="inline-flex items-center gap-2 text-sm font-semibold text-maroon">
+                Models
               </span>
             ) : (
               <img
