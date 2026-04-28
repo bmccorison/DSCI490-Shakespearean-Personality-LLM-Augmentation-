@@ -5,3 +5,5 @@ interface/dist
 *.codex
 **AGENTS.md
 tests/
+**__pycache__/
+**.pyc

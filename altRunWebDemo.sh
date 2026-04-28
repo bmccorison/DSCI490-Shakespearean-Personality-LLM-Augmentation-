@@ -7,9 +7,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Override if needed, e.g.:
-# BACKEND_CMD="uvicorn app:app --host 0.0.0.0 --port 8000" ./runWebDemo.sh
+# BACKEND_CMD='uvicorn app:app --host 0.0.0.0 --port ${BACKEND_PORT}' ./runWebDemo.sh
 # FRONTEND_CMD="npm run dev -- --host localhost --port 6969" ./runWebDemo.sh
+BACKEND_CMD_WAS_PROVIDED=0
 if [[ -n "${BACKEND_CMD:-}" ]]; then
+  BACKEND_CMD_WAS_PROVIDED=1
   BACKEND_CMD="${BACKEND_CMD}"
 elif [[ -x "$ROOT_DIR/.venv/bin/python3" ]]; then
   BACKEND_CMD="$ROOT_DIR/.venv/bin/python3 app.py"
@@ -19,6 +21,7 @@ fi
 FRONTEND_CMD="${FRONTEND_CMD:-npm run dev}"
 BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
+BACKEND_PORT_SEARCH_LIMIT="${BACKEND_PORT_SEARCH_LIMIT:-20}"
 BACKEND_READY_ATTEMPTS="${BACKEND_READY_ATTEMPTS:-20}"
 BACKEND_READY_DELAY_SECS="${BACKEND_READY_DELAY_SECS:-1}"
 
@@ -42,6 +45,32 @@ shutdown_service() {
   fi
 
   wait "$pid" 2>/dev/null || true
+}
+
+find_available_backend_port() {
+  BACKEND_PORT="$BACKEND_PORT" BACKEND_PORT_SEARCH_LIMIT="$BACKEND_PORT_SEARCH_LIMIT" python3 - <<'PY'
+import os
+import socket
+import sys
+
+start_port = int(os.environ["BACKEND_PORT"])
+search_limit = int(os.environ["BACKEND_PORT_SEARCH_LIMIT"])
+
+for candidate_port in range(start_port, start_port + search_limit + 1):
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("0.0.0.0", candidate_port))
+    except OSError:
+        continue
+    finally:
+        sock.close()
+
+    print(candidate_port)
+    sys.exit(0)
+
+sys.exit(1)
+PY
 }
 
 wait_for_backend() {
@@ -108,11 +137,24 @@ if [[ ! -f "$ROOT_DIR/interface/package.json" ]]; then
   exit 1
 fi
 
+requested_backend_port="$BACKEND_PORT"
+if ! BACKEND_PORT="$(find_available_backend_port)"; then
+  echo "Could not find an open backend port between ${requested_backend_port} and $((requested_backend_port + BACKEND_PORT_SEARCH_LIMIT))."
+  exit 1
+fi
+
+if [[ "$BACKEND_PORT" != "$requested_backend_port" ]]; then
+  echo "Port ${requested_backend_port} is already in use; falling back to ${BACKEND_PORT}."
+  if [[ "$BACKEND_CMD_WAS_PROVIDED" -eq 1 && "$BACKEND_CMD" != *"BACKEND_PORT"* ]]; then
+    echo "Warning: custom BACKEND_CMD may ignore BACKEND_PORT=${BACKEND_PORT} unless it references that environment variable."
+  fi
+fi
+
 # Find the backend and frontend paths, then run startup commands
-echo "Starting backend with: $BACKEND_CMD"
+echo "Starting backend with: $BACKEND_CMD (port ${BACKEND_PORT})"
 (
   cd "$ROOT_DIR"
-  bash -lc "$BACKEND_CMD"
+  BACKEND_PORT="$BACKEND_PORT" bash -lc "$BACKEND_CMD"
 ) &
 backend_pid=$!
 
@@ -126,7 +168,7 @@ fi
 echo "Starting frontend with: $FRONTEND_CMD"
 (
   cd "$ROOT_DIR/interface"
-  bash -lc "$FRONTEND_CMD"
+  BACKEND_PORT="$BACKEND_PORT" bash -lc "$FRONTEND_CMD"
 ) &
 frontend_pid=$!
 
