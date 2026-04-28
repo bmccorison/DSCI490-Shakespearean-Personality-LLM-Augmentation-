@@ -296,6 +296,7 @@ async function retryStartupAction(action, options = {}) {
 
 export default function App() {
   const [models, setModels] = useState([]);
+  const [activeTab, setActiveTab] = useState("single");
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedAdapter, setSelectedAdapter] = useState("");
   const [character, setCharacter] = useState("Hamlet");
@@ -315,9 +316,10 @@ export default function App() {
     minParticipants: MULTIMODEL_MIN_SPEAKERS,
     maxParticipants: MULTIMODEL_MAX_SPEAKERS,
   });
-  const [multiInitialPrompt, setMultiInitialPrompt] = useState(
+  const [multiDraft, setMultiDraft] = useState(
     "Debate whether action or patience better serves Denmark."
   );
+  const [multiConversationPrompt, setMultiConversationPrompt] = useState("");
   const [multiMaxTurns, setMultiMaxTurns] = useState(MULTIMODEL_DEFAULT_MAX_TURNS);
   const [multiSpeakerCount, setMultiSpeakerCount] = useState(MULTIMODEL_MIN_SPEAKERS);
   const [multiParticipants, setMultiParticipants] = useState(() =>
@@ -331,6 +333,7 @@ export default function App() {
   const [isMultiRunning, setIsMultiRunning] = useState(false);
   const [activityLog, setActivityLog] = useState([]);
   const bottomRef = useRef(null);
+  const multiBottomRef = useRef(null);
   const activeAudioRef = useRef(null);
   const activeAudioUrlRef = useRef("");
   const pendingModelApplyCountRef = useRef(0);
@@ -393,6 +396,12 @@ export default function App() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isSending]);
+
+  useEffect(() => {
+    if (activeTab === "multi") {
+      multiBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [activeTab, multiConversationPrompt, multiTurns, isMultiRunning]);
 
   const releaseActiveAudio = () => {
     const activeAudio = activeAudioRef.current;
@@ -674,10 +683,10 @@ export default function App() {
     });
   };
 
-  const buildMultiStartPayload = () => {
-    const initialPrompt = multiInitialPrompt.trim();
+  const buildMultiStartPayload = (initialPromptText) => {
+    const initialPrompt = initialPromptText.trim();
     if (!initialPrompt) {
-      throw new Error("Enter an initial prompt for the model conversation.");
+      throw new Error("Enter a prompt for the model conversation.");
     }
 
     const participants = visibleMultiParticipants.map((participant) => ({
@@ -706,27 +715,35 @@ export default function App() {
     };
   };
 
-  const handleStartMultiConversation = async () => {
+  const handleMultiSend = async (event) => {
+    event.preventDefault();
     if (isMultiRunning || isSending || isApplyingModel) {
+      return;
+    }
+
+    const initialPrompt = multiDraft.trim();
+    if (!initialPrompt) {
       return;
     }
 
     let startPayload;
     try {
-      startPayload = buildMultiStartPayload();
+      startPayload = buildMultiStartPayload(initialPrompt);
     } catch (validationError) {
       setMultiError(validationError.message);
       return;
     }
 
     setMultiError("");
+    setMultiConversationPrompt(initialPrompt);
+    setMultiDraft("");
     setMultiTurns([]);
     setIsMultiRunning(true);
     multiStopRequestedRef.current = false;
     releaseActiveAudio();
     clearPlaybackState();
     setMultiStatus("Starting model conversation...");
-    recordActivity("multimodel", "Model conversation started.");
+    recordActivity("multimodel", `Prompt sent: ${initialPrompt}`);
 
     try {
       await saveMultiModelConfig(startPayload.max_turns);
@@ -967,146 +984,330 @@ export default function App() {
     updateStatus("Speech paused.", "speech");
   };
 
+  const isSingleTab = activeTab === "single";
+  const isMultiTab = activeTab === "multi";
+  const singleInputDisabled = isSending || isApplyingModel || isMultiRunning;
+  const multiInputDisabled =
+    isMultiRunning || isSending || isApplyingModel || models.length === 0;
+
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-5xl flex-col px-4 py-8 md:px-8">
-      <header className="rounded-2xl border-2 border-maroon bg-white px-5 py-6 shadow-[0_10px_30px_rgba(165,46,48,0.16)]">
-        <h1 className="break-words font-hamlet text-[clamp(1.6rem,5vw,3.4rem)] leading-tight text-maroon">
-          Shakesperean Character Language Models
+    <div className="app-shell mx-auto flex min-h-screen w-full flex-col px-4 py-8 md:px-8">
+      <header className="folio-header rounded-2xl border-2 border-maroon bg-white px-5 py-6 shadow-[0_10px_30px_rgba(165,46,48,0.16)]">
+        <h1 className="folio-title break-words font-hamlet text-[clamp(1.6rem,5vw,3.4rem)] leading-tight text-maroon">
+          Shakespearean Character Language Models
         </h1>
       </header>
 
-      <section className="mt-6">
-        <details className="rounded-2xl border border-maroon/25 bg-white p-4" open>
-          <summary className="cursor-pointer font-semibold text-maroon">
-            Controls
-          </summary>
+      <nav
+        className="mode-tabs mt-4 inline-flex w-full rounded-xl border border-maroon/25 bg-white p-1 shadow-[0_6px_18px_rgba(69,20,21,0.08)] sm:w-auto"
+        role="tablist"
+        aria-label="Dialogue modes"
+      >
+        <button
+          className={`mode-tab flex-1 rounded-lg px-4 py-2 text-sm font-semibold transition sm:flex-none ${
+            isSingleTab
+              ? "mode-tab-active bg-maroon text-white"
+              : "text-maroon hover:bg-gold/20"
+          }`}
+          type="button"
+          role="tab"
+          aria-selected={isSingleTab}
+          onClick={() => setActiveTab("single")}
+        >
+          Single Character Dialogue
+        </button>
+        <button
+          className={`mode-tab flex-1 rounded-lg px-4 py-2 text-sm font-semibold transition sm:flex-none ${
+            isMultiTab
+              ? "mode-tab-active bg-maroon text-white"
+              : "text-maroon hover:bg-gold/20"
+          }`}
+          type="button"
+          role="tab"
+          aria-selected={isMultiTab}
+          onClick={() => setActiveTab("multi")}
+        >
+          Multi-Model Dialogue
+        </button>
+      </nav>
 
-          <div className="mt-3 grid gap-3 md:grid-cols-3">
-            <div>
-              <label className="block text-sm font-medium text-maroon">
-                Model
-              </label>
-              <select
-                className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
-                value={selectedModel}
-                onChange={(event) => handleModelChange(event.target.value)}
-                disabled={models.length === 0 || isMultiRunning}
-              >
-                {models.map((model) => (
-                  <option key={model.name} value={model.name}>
-                    {model.name}
-                  </option>
-                ))}
-                {models.length === 0 && <option>No models available</option>}
-              </select>
-              <p className="mt-1 min-h-10 text-sm text-maroon/75">
-                {modelDetails?.description || "No model description available."}
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-maroon">
-                Adapter
-              </label>
-              <select
-                className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
-                value={selectedAdapter}
-                onChange={(event) => handleAdapterChange(event.target.value)}
-                disabled={adapterOptions.length === 0 || isMultiRunning}
-              >
-                {adapterOptions.map((adapter) => (
-                  <option key={adapter.path} value={adapter.path}>
-                    {adapter.name}
-                  </option>
-                ))}
-                {adapterOptions.length === 0 && <option>No adapter</option>}
-              </select>
-              <p className="mt-1 min-h-10 text-sm text-maroon/75">
-                {selectedAdapterDetails?.description ||
-                  "No adapter description available."}
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-maroon">
-                Character
-              </label>
-              <select
-                className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
-                value={character}
-                onChange={(event) => handleCharacterChange(event.target.value)}
-                disabled={isMultiRunning}
-              >
-                {CHARACTER_OPTIONS.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm text-maroon/80">
-              Selections apply automatically.
-            </p>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
-                  isShakespeareStyleEnabled
-                    ? "border-maroon bg-maroon text-white"
-                    : "border-maroon bg-white text-maroon"
-                }`}
-                onClick={handleStyleToggle}
-                type="button"
-                aria-pressed={isShakespeareStyleEnabled}
-                disabled={isMultiRunning}
-              >
-                Shakespeare Style: {isShakespeareStyleEnabled ? "On" : "Off"}
-              </button>
-              <button
-                className="rounded-lg border border-maroon bg-white px-3 py-2 text-sm font-semibold text-maroon"
-                onClick={() =>
-                  refreshServerChat().catch((refreshError) =>
-                    reportError(refreshError.message, "Chat reset failed.")
-                  )
-                }
-                type="button"
-                disabled={isMultiRunning}
-              >
-                Refresh Chat
-              </button>
-            </div>
-          </div>
-        </details>
-      </section>
-
-      <section className="mt-4 rounded-2xl border-2 border-maroon bg-white p-4 shadow-[0_8px_24px_rgba(165,46,48,0.1)]">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-xl font-semibold text-maroon">
-              Model Conversation
-            </h2>
-            <p className="mt-1 text-sm text-maroon/75">
-              Configure two to four speakers, then let them answer each other in order.
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              className="rounded-lg border border-maroon bg-maroon px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-              onClick={handleStartMultiConversation}
-              type="button"
-              disabled={
-                isMultiRunning ||
-                isSending ||
-                isApplyingModel ||
-                models.length === 0
-              }
+      {isSingleTab && (
+        <>
+          <section className="mt-6">
+            <details
+              className="settings-panel rounded-2xl border border-maroon/25 bg-white p-4"
+              open
             >
-              {isMultiRunning ? "Running" : "Start Conversation"}
-            </button>
+              <summary className="cursor-pointer font-semibold text-maroon">
+                Single-character settings
+              </summary>
+
+              <div className="mt-3 grid gap-3 md:grid-cols-3">
+                <div>
+                  <label className="block text-sm font-medium text-maroon">
+                    Model
+                  </label>
+                  <select
+                    className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                    value={selectedModel}
+                    onChange={(event) => handleModelChange(event.target.value)}
+                    disabled={models.length === 0 || isMultiRunning}
+                  >
+                    {models.map((model) => (
+                      <option key={model.name} value={model.name}>
+                        {model.name}
+                      </option>
+                    ))}
+                    {models.length === 0 && <option>No models available</option>}
+                  </select>
+                  <p className="mt-1 min-h-10 text-sm text-maroon/75">
+                    {modelDetails?.description || "No model description available."}
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-maroon">
+                    Adapter
+                  </label>
+                  <select
+                    className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                    value={selectedAdapter}
+                    onChange={(event) => handleAdapterChange(event.target.value)}
+                    disabled={adapterOptions.length === 0 || isMultiRunning}
+                  >
+                    {adapterOptions.map((adapter) => (
+                      <option key={adapter.path} value={adapter.path}>
+                        {adapter.name}
+                      </option>
+                    ))}
+                    {adapterOptions.length === 0 && <option>No adapter</option>}
+                  </select>
+                  <p className="mt-1 min-h-10 text-sm text-maroon/75">
+                    {selectedAdapterDetails?.description ||
+                      "No adapter description available."}
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-maroon">
+                    Character
+                  </label>
+                  <select
+                    className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                    value={character}
+                    onChange={(event) =>
+                      handleCharacterChange(event.target.value)
+                    }
+                    disabled={isMultiRunning}
+                  >
+                    {CHARACTER_OPTIONS.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-maroon/80">
+                  Selections apply automatically.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    className={`manuscript-button rounded-lg border px-3 py-2 text-sm font-semibold ${
+                      isShakespeareStyleEnabled
+                        ? "seal-button border-maroon bg-maroon text-white"
+                        : "border-maroon bg-white text-maroon"
+                    }`}
+                    onClick={handleStyleToggle}
+                    type="button"
+                    aria-pressed={isShakespeareStyleEnabled}
+                    disabled={isMultiRunning}
+                  >
+                    Shakespeare Style:{" "}
+                    {isShakespeareStyleEnabled ? "On" : "Off"}
+                  </button>
+                  <button
+                    className="manuscript-button rounded-lg border border-maroon bg-white px-3 py-2 text-sm font-semibold text-maroon"
+                    onClick={() =>
+                      refreshServerChat().catch((refreshError) =>
+                        reportError(refreshError.message, "Chat reset failed.")
+                      )
+                    }
+                    type="button"
+                    disabled={isMultiRunning}
+                  >
+                    Refresh Chat
+                  </button>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <section className="dialogue-folio mt-6 flex flex-1 flex-col rounded-2xl border-2 border-maroon bg-parchment p-4 shadow-[0_8px_24px_rgba(165,46,48,0.12)]">
+            <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="dialogue-title text-xl font-semibold text-maroon">
+                  Single Character Dialogue
+                </h2>
+                <p className="status-copy mt-1 text-sm text-maroon/75">{status}</p>
+              </div>
+              {error && (
+                <p className="notice rounded-xl border border-maroon/20 bg-white px-3 py-2 text-sm text-maroon">
+                  {error}
+                </p>
+              )}
+            </div>
+
+            <div className="message-scroll h-[420px] overflow-y-auto pr-2">
+              {messages.length === 0 && (
+                <p className="empty-state pt-10 text-center text-lg text-maroon/75">
+                  Speak to {character} to begin the conversation.
+                </p>
+              )}
+
+              {messages.map((message) => (
+                <div
+                  key={message.id}
+                  className={`message-row mb-3 flex max-w-[96%] items-start gap-2 ${
+                    message.role === "user"
+                      ? "ml-auto flex-row-reverse justify-end"
+                      : "mr-auto"
+                  }`}
+                >
+                  <div className="message-icon message-avatar mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
+                    {message.role === "user" ? (
+                      <img
+                        src="/quill.svg"
+                        alt=""
+                        className="h-5 w-5"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <RobotIcon className="h-5 w-5" />
+                    )}
+                  </div>
+
+                  <article
+                    className={`chat-bubble max-w-[92%] rounded-xl border px-4 py-3 ${
+                      message.role === "user"
+                        ? "user-bubble border-maroon bg-maroon text-white"
+                        : "assistant-bubble border-gold bg-white text-maroon"
+                    }`}
+                  >
+                    <p className="whitespace-pre-wrap text-lg leading-relaxed">
+                      {message.content}
+                    </p>
+                    {message.role === "assistant" && (
+                      <div className="assistant-actions mt-2 flex flex-wrap gap-2">
+                        <button
+                          className="rounded-md border border-maroon px-2 py-1 text-sm font-medium text-maroon hover:bg-gold disabled:cursor-not-allowed disabled:opacity-60"
+                          onClick={() =>
+                            handleSpeak(message.id, message.content)
+                          }
+                          type="button"
+                          disabled={isAudioLoading && speakingId === message.id}
+                        >
+                          {isAudioLoading && speakingId === message.id
+                            ? "Voicing..."
+                            : speakingId === message.id && !isAudioPaused
+                              ? "Playing..."
+                              : "Play Voice"}
+                        </button>
+                        {speakingId === message.id && !isAudioLoading && (
+                          <button
+                            className="rounded-md border border-maroon px-2 py-1 text-sm font-medium text-maroon hover:bg-gold"
+                            onClick={handlePauseResume}
+                            type="button"
+                          >
+                            {isAudioPaused ? "Resume Voice" : "Pause Voice"}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </article>
+                </div>
+              ))}
+
+              {isSending && (
+                <div className="message-row mb-3 flex max-w-[96%] items-start gap-2">
+                  <div className="message-icon message-avatar mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
+                    <img src="/crown.svg" className="h-5 w-5" alt="" />
+                  </div>
+
+                  <article className="typing-indicator chat-bubble assistant-bubble max-w-[92%] rounded-xl border border-gold bg-white px-4 py-3 text-maroon">
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-semibold text-maroon/75">
+                        {character} is drafting
+                      </span>
+                      <div className="flex items-center gap-1.5" aria-hidden="true">
+                        <span className="typing-dot" />
+                        <span className="typing-dot typing-dot-delay-1" />
+                        <span className="typing-dot typing-dot-delay-2" />
+                      </div>
+                    </div>
+                  </article>
+                </div>
+              )}
+
+              <div ref={bottomRef} />
+            </div>
+
+            <form className="composer-form mt-4 flex gap-2" onSubmit={handleSend}>
+              <input
+                className="manuscript-input flex-1 rounded-xl border border-maroon/35 bg-white px-4 py-3 text-lg text-maroon placeholder:text-maroon/50 focus:border-maroon focus:outline-none"
+                placeholder="What sayest thou?"
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                disabled={singleInputDisabled}
+              />
+              <button
+                type="submit"
+                disabled={singleInputDisabled}
+                className="send-quill-btn quill-send-button inline-flex h-12 min-w-12 items-center justify-center rounded-lg border-2 border-gold bg-white px-3 shadow-sm transition hover:bg-gold/20 disabled:cursor-not-allowed disabled:opacity-60"
+                aria-label="Send message"
+              >
+                {isSending ? (
+                  <span className="inline-flex items-center gap-2 text-sm font-semibold text-maroon">
+                    <span className="loading-ripple" aria-hidden="true" />
+                    Sending
+                  </span>
+                ) : isApplyingModel ? (
+                  <span className="inline-flex items-center gap-2 text-sm font-semibold text-maroon">
+                    Applying
+                  </span>
+                ) : isMultiRunning ? (
+                  <span className="inline-flex items-center gap-2 text-sm font-semibold text-maroon">
+                    Models
+                  </span>
+                ) : (
+                  <img
+                    src="/quill.svg"
+                    alt=""
+                    className="h-7 w-7"
+                    aria-hidden="true"
+                  />
+                )}
+              </button>
+            </form>
+          </section>
+        </>
+      )}
+
+      {isMultiTab && (
+        <section className="dialogue-folio mt-6 flex flex-1 flex-col rounded-2xl border-2 border-maroon bg-parchment p-4 shadow-[0_8px_24px_rgba(165,46,48,0.12)]">
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="dialogue-title text-xl font-semibold text-maroon">
+                Multi-Model Dialogue
+              </h2>
+              <p className="status-copy mt-1 text-sm text-maroon/75">
+                {multiStatus}
+              </p>
+            </div>
             <button
-              className="rounded-lg border border-maroon bg-white px-3 py-2 text-sm font-semibold text-maroon disabled:cursor-not-allowed disabled:opacity-60"
+              className="manuscript-button rounded-lg border border-maroon bg-white px-3 py-2 text-sm font-semibold text-maroon disabled:cursor-not-allowed disabled:opacity-60"
               onClick={handleStopMultiConversation}
               type="button"
               disabled={!isMultiRunning}
@@ -1114,409 +1315,335 @@ export default function App() {
               Stop
             </button>
           </div>
-        </div>
 
-        <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_13rem_12rem]">
-          <label className="block">
-            <span className="text-sm font-medium text-maroon">
-              Initial prompt
-            </span>
-            <textarea
-              className="mt-1 min-h-24 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon placeholder:text-maroon/50"
-              value={multiInitialPrompt}
-              onChange={(event) => setMultiInitialPrompt(event.target.value)}
-              disabled={isMultiRunning}
-            />
-          </label>
+          <details className="settings-panel mb-4 rounded-xl border border-maroon/25 bg-white p-4">
+            <summary className="cursor-pointer font-semibold text-maroon">
+              Multi-model settings
+            </summary>
 
-          <label className="block">
-            <span className="text-sm font-medium text-maroon">
-              Speakers
-            </span>
-            <select
-              className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
-              value={multiSpeakerCount}
-              onChange={(event) =>
-                handleMultiSpeakerCountChange(event.target.value)
-              }
-              disabled={isMultiRunning}
-            >
-              {Array.from(
-                {
-                  length:
-                    multiModelConfig.maxParticipants -
-                    multiModelConfig.minParticipants +
-                    1,
-                },
-                (_, index) => multiModelConfig.minParticipants + index
-              ).map((count) => (
-                <option key={count} value={count}>
-                  {count}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <div>
-            <label className="block">
-              <span className="text-sm font-medium text-maroon">
-                Max turns
-              </span>
-              <input
-                className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
-                type="number"
-                min="1"
-                max={multiModelConfig.hardMaxTurns}
-                value={multiMaxTurns}
-                onChange={(event) => setMultiMaxTurns(event.target.value)}
-                disabled={isMultiRunning}
-              />
-            </label>
-            <button
-              className="mt-2 w-full rounded-lg border border-maroon bg-white px-3 py-2 text-sm font-semibold text-maroon disabled:cursor-not-allowed disabled:opacity-60"
-              onClick={handleSaveMultiMaxTurns}
-              type="button"
-              disabled={isMultiRunning}
-            >
-              Save Limit
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
-          {visibleMultiParticipants.map((participant, index) => {
-            const participantModel = models.find(
-              (model) => model.name === participant.model_name
-            );
-            const participantAdapters = participantModel?.adapters ?? [];
-
-            return (
-              <article
-                key={`${index}-${participant.name}`}
-                className="rounded-xl border border-maroon/20 bg-parchment p-3"
-              >
-                <div className="grid gap-2 sm:grid-cols-3">
-                  <label className="block">
-                    <span className="text-sm font-medium text-maroon">
-                      Speaker
-                    </span>
-                    <input
-                      className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
-                      value={participant.name}
-                      onChange={(event) =>
-                        updateMultiParticipant(index, {
-                          name: event.target.value,
-                        })
-                      }
-                      disabled={isMultiRunning}
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="text-sm font-medium text-maroon">
-                      Character
-                    </span>
-                    <input
-                      className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
-                      value={participant.character}
-                      onChange={(event) =>
-                        updateMultiParticipant(index, {
-                          character: event.target.value,
-                        })
-                      }
-                      disabled={isMultiRunning}
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="text-sm font-medium text-maroon">
-                      Work
-                    </span>
-                    <input
-                      className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
-                      value={participant.work}
-                      onChange={(event) =>
-                        updateMultiParticipant(index, {
-                          work: event.target.value,
-                        })
-                      }
-                      disabled={isMultiRunning}
-                    />
-                  </label>
-                </div>
-
-                <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                  <label className="block">
-                    <span className="text-sm font-medium text-maroon">
-                      Model
-                    </span>
-                    <select
-                      className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
-                      value={participant.model_name}
-                      onChange={(event) =>
-                        handleMultiModelChange(index, event.target.value)
-                      }
-                      disabled={isMultiRunning || models.length === 0}
-                    >
-                      {models.map((model) => (
-                        <option key={model.name} value={model.name}>
-                          {model.name}
-                        </option>
-                      ))}
-                      {models.length === 0 && <option>No models available</option>}
-                    </select>
-                  </label>
-                  <label className="block">
-                    <span className="text-sm font-medium text-maroon">
-                      Adapter
-                    </span>
-                    <select
-                      className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
-                      value={participant.adapter_path}
-                      onChange={(event) =>
-                        updateMultiParticipant(index, {
-                          adapter_path: event.target.value,
-                        })
-                      }
-                      disabled={isMultiRunning || participantAdapters.length === 0}
-                    >
-                      {participantAdapters.map((adapter) => (
-                        <option key={adapter.path} value={adapter.path}>
-                          {adapter.name}
-                        </option>
-                      ))}
-                      {participantAdapters.length === 0 && <option>No adapter</option>}
-                    </select>
-                  </label>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-
-        <div className="mt-4 grid gap-3 lg:grid-cols-[16rem_minmax(0,1fr)]">
-          <aside className="rounded-xl border border-maroon/20 bg-parchment p-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-maroon/60">
-              Conversation Status
-            </p>
-            <p className="mt-2 text-base text-maroon">{multiStatus}</p>
-            {multiError && (
-              <p className="mt-3 rounded-lg border border-maroon/20 bg-white px-3 py-2 text-sm text-maroon">
-                {multiError}
-              </p>
-            )}
-          </aside>
-
-          <div className="max-h-80 overflow-y-auto rounded-xl border border-maroon/20 bg-parchment p-3">
-            {multiTurns.length === 0 && (
-              <p className="py-8 text-center text-base text-maroon/70">
-                Generated model turns will appear here.
-              </p>
-            )}
-            {multiTurns.map((turn) => (
-              <article
-                key={`${turn.turn_number}-${turn.speaker_name}`}
-                className="mb-3 rounded-xl border border-gold bg-white px-4 py-3 text-maroon last:mb-0"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="font-semibold">
-                    {turn.speaker_name} as {turn.character}
-                  </p>
-                  <span className="text-sm text-maroon/60">
-                    Turn {turn.turn_number}
-                  </span>
-                </div>
-                <p className="mt-2 whitespace-pre-wrap text-lg leading-relaxed">
-                  {turn.content}
-                </p>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
-        <article className="rounded-2xl border border-maroon/20 bg-white px-4 py-4 shadow-[0_6px_18px_rgba(69,20,21,0.08)]">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-maroon/60">
-            Current Status
-          </p>
-          <p className="mt-2 text-lg text-maroon">{status}</p>
-          {error && (
-            <p className="mt-3 rounded-xl border border-maroon/20 bg-maroon/5 px-3 py-2 text-sm text-maroon">
-              {error}
-            </p>
-          )}
-        </article>
-
-        <article className="rounded-2xl border border-maroon/20 bg-white px-4 py-4 shadow-[0_6px_18px_rgba(69,20,21,0.08)]">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-maroon/60">
-              Activity Log
-            </p>
-            <span className="text-xs text-maroon/60">
-              {activityLog.length} recent event{activityLog.length === 1 ? "" : "s"}
-            </span>
-          </div>
-          <div className="mt-3 max-h-40 space-y-2 overflow-y-auto pr-1">
-            {activityLog.length === 0 && (
-              <p className="rounded-xl border border-dashed border-maroon/20 bg-parchment px-3 py-3 text-sm text-maroon/70">
-                Actions will appear here as the interface works.
-              </p>
-            )}
-            {activityLog.map((entry) => (
-              <div
-                key={entry.id}
-                className={`rounded-xl border px-3 py-2 text-sm ${
-                  entry.kind === "error"
-                    ? "border-maroon/30 bg-maroon/5 text-maroon"
-                    : "border-gold/50 bg-parchment text-maroon"
-                }`}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-semibold capitalize">{entry.kind}</span>
-                  <span className="text-xs text-maroon/60">{entry.timestamp}</span>
-                </div>
-                <p className="mt-1 leading-snug">{entry.detail}</p>
+            <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_12rem_12rem]">
+              <div>
+                <span className="text-sm font-medium text-maroon">
+                  Shakespeare Style
+                </span>
+                <button
+                  className={`manuscript-button mt-1 w-full rounded-lg border px-3 py-2 text-sm font-semibold ${
+                    isShakespeareStyleEnabled
+                      ? "seal-button border-maroon bg-maroon text-white"
+                      : "border-maroon bg-white text-maroon"
+                  }`}
+                  onClick={handleStyleToggle}
+                  type="button"
+                  aria-pressed={isShakespeareStyleEnabled}
+                  disabled={isMultiRunning}
+                >
+                  {isShakespeareStyleEnabled ? "On" : "Off"}
+                </button>
               </div>
-            ))}
-          </div>
-        </article>
-      </section>
 
-      <section className="mt-6 flex flex-1 flex-col rounded-2xl border-2 border-maroon bg-parchment p-4 shadow-[0_8px_24px_rgba(165,46,48,0.12)]">
-        <div className="h-[360px] overflow-y-auto pr-2">
-          {messages.length === 0 && (
-            <p className="pt-10 text-center text-lg text-maroon/75">
-              Speak to {character} to begin the conversation.
+              <label className="block">
+                <span className="text-sm font-medium text-maroon">
+                  Speakers
+                </span>
+                <select
+                  className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                  value={multiSpeakerCount}
+                  onChange={(event) =>
+                    handleMultiSpeakerCountChange(event.target.value)
+                  }
+                  disabled={isMultiRunning}
+                >
+                  {Array.from(
+                    {
+                      length:
+                        multiModelConfig.maxParticipants -
+                        multiModelConfig.minParticipants +
+                        1,
+                    },
+                    (_, index) => multiModelConfig.minParticipants + index
+                  ).map((count) => (
+                    <option key={count} value={count}>
+                      {count}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div>
+                <label className="block">
+                  <span className="text-sm font-medium text-maroon">
+                    Max turns
+                  </span>
+                  <input
+                    className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                    type="number"
+                    min="1"
+                    max={multiModelConfig.hardMaxTurns}
+                    value={multiMaxTurns}
+                    onChange={(event) => setMultiMaxTurns(event.target.value)}
+                    disabled={isMultiRunning}
+                  />
+                </label>
+                <button
+                  className="manuscript-button mt-2 w-full rounded-lg border border-maroon bg-white px-3 py-2 text-sm font-semibold text-maroon disabled:cursor-not-allowed disabled:opacity-60"
+                  onClick={handleSaveMultiMaxTurns}
+                  type="button"
+                  disabled={isMultiRunning}
+                >
+                  Save Limit
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              {visibleMultiParticipants.map((participant, index) => {
+                const participantModel = models.find(
+                  (model) => model.name === participant.model_name
+                );
+                const participantAdapters = participantModel?.adapters ?? [];
+
+                return (
+                  <article
+                    key={`${index}-${participant.name}`}
+                    className="settings-panel rounded-xl border border-maroon/20 bg-parchment p-3"
+                  >
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <label className="block">
+                        <span className="text-sm font-medium text-maroon">
+                          Speaker
+                        </span>
+                        <input
+                          className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                          value={participant.name}
+                          onChange={(event) =>
+                            updateMultiParticipant(index, {
+                              name: event.target.value,
+                            })
+                          }
+                          disabled={isMultiRunning}
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-sm font-medium text-maroon">
+                          Character
+                        </span>
+                        <input
+                          className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                          value={participant.character}
+                          onChange={(event) =>
+                            updateMultiParticipant(index, {
+                              character: event.target.value,
+                            })
+                          }
+                          disabled={isMultiRunning}
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-sm font-medium text-maroon">
+                          Work
+                        </span>
+                        <input
+                          className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                          value={participant.work}
+                          onChange={(event) =>
+                            updateMultiParticipant(index, {
+                              work: event.target.value,
+                            })
+                          }
+                          disabled={isMultiRunning}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      <label className="block">
+                        <span className="text-sm font-medium text-maroon">
+                          Model
+                        </span>
+                        <select
+                          className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                          value={participant.model_name}
+                          onChange={(event) =>
+                            handleMultiModelChange(index, event.target.value)
+                          }
+                          disabled={isMultiRunning || models.length === 0}
+                        >
+                          {models.map((model) => (
+                            <option key={model.name} value={model.name}>
+                              {model.name}
+                            </option>
+                          ))}
+                          {models.length === 0 && (
+                            <option>No models available</option>
+                          )}
+                        </select>
+                      </label>
+                      <label className="block">
+                        <span className="text-sm font-medium text-maroon">
+                          Adapter
+                        </span>
+                        <select
+                          className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                          value={participant.adapter_path}
+                          onChange={(event) =>
+                            updateMultiParticipant(index, {
+                              adapter_path: event.target.value,
+                            })
+                          }
+                          disabled={
+                            isMultiRunning || participantAdapters.length === 0
+                          }
+                        >
+                          {participantAdapters.map((adapter) => (
+                            <option key={adapter.path} value={adapter.path}>
+                              {adapter.name}
+                            </option>
+                          ))}
+                          {participantAdapters.length === 0 && (
+                            <option>No adapter</option>
+                          )}
+                        </select>
+                      </label>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </details>
+
+          {multiError && (
+            <p className="notice mb-3 rounded-xl border border-maroon/20 bg-white px-3 py-2 text-sm text-maroon">
+              {multiError}
             </p>
           )}
 
-          {messages.map((message) => (
-            <div
-              key={message.id}
-              className={`message-row mb-3 flex max-w-[96%] items-start gap-2 ${
-                message.role === "user"
-                  ? "ml-auto justify-end flex-row-reverse"
-                  : "mr-auto"
-              }`}
-            >
-              <div className="message-icon mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
-                {message.role === "user" ? (
+          <div className="message-scroll h-[420px] overflow-y-auto pr-2">
+            {!multiConversationPrompt && multiTurns.length === 0 && (
+              <p className="empty-state pt-10 text-center text-lg text-maroon/75">
+                Send a prompt to start a model-to-model dialogue.
+              </p>
+            )}
+
+            {multiConversationPrompt && (
+              <div className="message-row mb-3 ml-auto flex max-w-[96%] flex-row-reverse items-start justify-end gap-2">
+                <div className="message-icon message-avatar mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
                   <img
                     src="/quill.svg"
                     alt=""
                     className="h-5 w-5"
                     aria-hidden="true"
                   />
-                ) : (
-                  <RobotIcon className="h-5 w-5" />
-                )}
-              </div>
-
-              <article
-                className={`max-w-[92%] rounded-xl border px-4 py-3 ${
-                  message.role === "user"
-                    ? "border-maroon bg-maroon text-white"
-                    : "border-gold bg-white text-maroon"
-                }`}
-              >
-                <p className="whitespace-pre-wrap text-lg leading-relaxed">
-                  {message.content}
-                </p>
-                {message.role === "assistant" && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button
-                      className="rounded-md border border-maroon px-2 py-1 text-sm font-medium text-maroon hover:bg-gold disabled:cursor-not-allowed disabled:opacity-60"
-                      onClick={() => handleSpeak(message.id, message.content)}
-                      type="button"
-                      disabled={isAudioLoading && speakingId === message.id}
-                    >
-                      {isAudioLoading && speakingId === message.id
-                        ? "Voicing..."
-                        : speakingId === message.id && !isAudioPaused
-                          ? "Playing..."
-                          : "Play Voice"}
-                    </button>
-                    {speakingId === message.id && !isAudioLoading && (
-                      <button
-                        className="rounded-md border border-maroon px-2 py-1 text-sm font-medium text-maroon hover:bg-gold"
-                        onClick={handlePauseResume}
-                        type="button"
-                      >
-                        {isAudioPaused ? "Resume Voice" : "Pause Voice"}
-                      </button>
-                    )}
-                  </div>
-                )}
-              </article>
-            </div>
-          ))}
-
-          {isSending && (
-            <div className="message-row mb-3 flex max-w-[96%] items-start gap-2">
-              <div className="message-icon mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
-                <img src="/crown.svg" className="h-5 w-5" alt="" />
-              </div>
-
-              <article className="typing-indicator max-w-[92%] rounded-xl border border-gold bg-white px-4 py-3 text-maroon">
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold text-maroon/75">
-                    Hamlet is drafting
-                  </span>
-                  <div className="flex items-center gap-1.5" aria-hidden="true">
-                    <span className="typing-dot" />
-                    <span className="typing-dot typing-dot-delay-1" />
-                    <span className="typing-dot typing-dot-delay-2" />
-                  </div>
                 </div>
-              </article>
-            </div>
-          )}
-
-          <div ref={bottomRef} />
-        </div>
-
-        <form className="mt-4 flex gap-2" onSubmit={handleSend}>
-          <input
-            className="flex-1 rounded-xl border border-maroon/35 bg-white px-4 py-3 text-lg text-maroon placeholder:text-maroon/50 focus:border-maroon focus:outline-none"
-            placeholder="What sayest thou?"
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            disabled={isSending || isApplyingModel || isMultiRunning}
-          />
-          <button
-            type="submit"
-            disabled={isSending || isApplyingModel || isMultiRunning}
-            className="send-quill-btn inline-flex h-12 min-w-12 items-center justify-center rounded-lg border-2 border-gold bg-white px-3 shadow-sm transition hover:bg-gold/20 disabled:cursor-not-allowed disabled:opacity-60"
-            aria-label="Send message"
-          >
-            {isSending ? (
-              <span className="inline-flex items-center gap-2 text-sm font-semibold text-maroon">
-                <span className="loading-ripple" aria-hidden="true" />
-                Sending
-              </span>
-            ) : isApplyingModel ? (
-              <span className="inline-flex items-center gap-2 text-sm font-semibold text-maroon">
-                Applying
-              </span>
-            ) : isMultiRunning ? (
-              <span className="inline-flex items-center gap-2 text-sm font-semibold text-maroon">
-                Models
-              </span>
-            ) : (
-              <img
-                src="/quill.svg"
-                alt=""
-                className="h-7 w-7"
-                aria-hidden="true"
-              />
+                <article className="chat-bubble user-bubble max-w-[92%] rounded-xl border border-maroon bg-maroon px-4 py-3 text-white">
+                  <p className="whitespace-pre-wrap text-lg leading-relaxed">
+                    {multiConversationPrompt}
+                  </p>
+                </article>
+              </div>
             )}
-          </button>
-        </form>
-      </section>
 
-      <footer className="mt-3 min-h-6 text-sm text-maroon/70">
-        <p>
-          Latest event: {activityLog[0]?.detail || status}
-        </p>
+            {multiTurns.map((turn) => {
+              const alignRight = Number(turn.speaker_index) % 2 === 1;
+              return (
+                <div
+                  key={`${turn.turn_number}-${turn.speaker_name}`}
+                  className={`message-row mb-3 flex max-w-[96%] items-start gap-2 ${
+                    alignRight ? "ml-auto flex-row-reverse justify-end" : "mr-auto"
+                  }`}
+                >
+                  <div className="message-icon message-avatar mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
+                    <RobotIcon className="h-5 w-5" />
+                  </div>
+
+                  <article
+                    className={`chat-bubble max-w-[92%] rounded-xl border px-4 py-3 ${
+                      alignRight
+                        ? "user-bubble border-maroon bg-maroon text-white"
+                        : "assistant-bubble border-gold bg-white text-maroon"
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-maroon/75">
+                        {turn.speaker_name} as {turn.character}
+                      </p>
+                      <span className="text-xs text-maroon/60">
+                        Turn {turn.turn_number}
+                      </span>
+                    </div>
+                    <p className="mt-2 whitespace-pre-wrap text-lg leading-relaxed">
+                      {turn.content}
+                    </p>
+                  </article>
+                </div>
+              );
+            })}
+
+            {isMultiRunning && (
+              <div className="message-row mb-3 flex max-w-[96%] items-start gap-2">
+                <div className="message-icon message-avatar mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
+                  <RobotIcon className="h-5 w-5" />
+                </div>
+
+                <article className="typing-indicator chat-bubble assistant-bubble max-w-[92%] rounded-xl border border-gold bg-white px-4 py-3 text-maroon">
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-semibold text-maroon/75">
+                      {multiStatus}
+                    </span>
+                    <div className="flex items-center gap-1.5" aria-hidden="true">
+                      <span className="typing-dot" />
+                      <span className="typing-dot typing-dot-delay-1" />
+                      <span className="typing-dot typing-dot-delay-2" />
+                    </div>
+                  </div>
+                </article>
+              </div>
+            )}
+
+            <div ref={multiBottomRef} />
+          </div>
+
+          <form className="composer-form mt-4 flex gap-2" onSubmit={handleMultiSend}>
+            <input
+              className="manuscript-input flex-1 rounded-xl border border-maroon/35 bg-white px-4 py-3 text-lg text-maroon placeholder:text-maroon/50 focus:border-maroon focus:outline-none"
+              placeholder={
+                models.length === 0
+                  ? "No models available"
+                  : "Start a model-to-model exchange"
+              }
+              value={multiDraft}
+              onChange={(event) => setMultiDraft(event.target.value)}
+              disabled={multiInputDisabled}
+            />
+            <button
+              type="submit"
+              disabled={multiInputDisabled || multiDraft.trim().length === 0}
+              className="send-quill-btn quill-send-button inline-flex h-12 min-w-12 items-center justify-center rounded-lg border-2 border-gold bg-white px-3 shadow-sm transition hover:bg-gold/20 disabled:cursor-not-allowed disabled:opacity-60"
+              aria-label="Send multimodel prompt"
+            >
+              {isMultiRunning ? (
+                <span className="inline-flex items-center gap-2 text-sm font-semibold text-maroon">
+                  <span className="loading-ripple" aria-hidden="true" />
+                  Running
+                </span>
+              ) : isApplyingModel ? (
+                <span className="inline-flex items-center gap-2 text-sm font-semibold text-maroon">
+                  Applying
+                </span>
+              ) : (
+                <img
+                  src="/quill.svg"
+                  alt=""
+                  className="h-7 w-7"
+                  aria-hidden="true"
+                />
+              )}
+            </button>
+          </form>
+        </section>
+      )}
+
+      <footer className="folio-footer mt-3 min-h-6 text-sm text-maroon/70">
+        <p>Latest event: {activityLog[0]?.detail || status}</p>
       </footer>
     </div>
   );

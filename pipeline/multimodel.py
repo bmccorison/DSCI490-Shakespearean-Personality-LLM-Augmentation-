@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 from uuid import uuid4
+
+from pipeline.lm_generation import _render_prompt_messages
 
 MIN_PARTICIPANTS = 2
 MAX_PARTICIPANTS = 4
@@ -13,6 +16,21 @@ HARD_MAX_TURNS = 20
 DEFAULT_CONTEXT_TURNS = 8
 
 ModelLoader = Callable[[str, str], tuple[Any, Any]]
+
+# Guards generate_next_turn against concurrent /next calls on the same session.
+_generation_lock = threading.Lock()
+
+
+def validate_max_turns(max_turns: int) -> int:
+    '''Validate a requested turn count against the hard session limit.'''
+    try:
+        parsed = int(max_turns)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Max turns must be an integer.") from exc
+
+    if parsed < 1 or parsed > HARD_MAX_TURNS:
+        raise ValueError(f"Max turns must be between 1 and {HARD_MAX_TURNS}.")
+    return parsed
 
 
 @dataclass(frozen=True)
@@ -98,7 +116,7 @@ class MultiModelConversation:
         if not self.initial_prompt:
             raise ValueError("Initial prompt is required.")
 
-        self.max_turns = self._validate_max_turns(max_turns)
+        self.max_turns = validate_max_turns(max_turns)
         self.shakespeare_style = bool(shakespeare_style)
         self.context_turns = max(1, int(context_turns))
         self.turns: list[MultiModelTurn] = []
@@ -121,18 +139,6 @@ class MultiModelConversation:
             raise ValueError("Participant names must be unique.")
 
         return participants
-
-    @staticmethod
-    def _validate_max_turns(max_turns: int) -> int:
-        '''Keep automated conversations bounded to protect local compute.'''
-        try:
-            parsed_max_turns = int(max_turns)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("Max turns must be an integer.") from exc
-
-        if parsed_max_turns < 1 or parsed_max_turns > HARD_MAX_TURNS:
-            raise ValueError(f"Max turns must be between 1 and {HARD_MAX_TURNS}.")
-        return parsed_max_turns
 
     @property
     def status(self) -> str:
@@ -184,43 +190,48 @@ class MultiModelConversation:
         model_loader: ModelLoader,
         response_generator: Callable[..., str] | None = None,
     ) -> MultiModelTurn | None:
-        '''Load the next speaker's model and append its generated response.'''
-        participant_index = self.next_participant_index()
-        if participant_index is None:
-            return None
+        '''Load the next speaker's model and append its generated response.
 
-        if response_generator is None:
-            # Import lazily so tests and non-generation imports do not require
-            # heavyweight model dependencies such as torch at module import time.
-            from pipeline.lm_generation import generate_response as response_generator
+        Acquires a module-level lock so concurrent /next requests cannot double-step
+        the round-robin counter or race on self.turns.
+        '''
+        with _generation_lock:
+            participant_index = self.next_participant_index()
+            if participant_index is None:
+                return None
 
-        participant = self.participants[participant_index]
-        model, tokenizer = model_loader(participant.model_name, participant.adapter_path)
-        prompt = self.build_prompt(participant)
-        tokenized_prompt = tokenizer(prompt, return_tensors="pt")
+            if response_generator is None:
+                # Imported lazily so the module can be loaded without torch being present.
+                from pipeline.lm_generation import generate_response as response_generator
 
-        response_text = response_generator(
-            tokenized_prompt,
-            model,
-            tokenizer,
-            apply_shakespeare_style=self.shakespeare_style,
-        ).strip()
-        if self.is_stopped:
-            # A stop request may arrive while a heavyweight generation call is
-            # still running; do not append stale output after that point.
-            return None
-        if not response_text:
-            response_text = f"{participant.character} falls silent."
+            participant = self.participants[participant_index]
+            model, tokenizer = model_loader(participant.model_name, participant.adapter_path)
+            prompt = self.build_prompt(participant)
+            tokenized_prompt = tokenizer(prompt, return_tensors="pt")
 
-        turn = MultiModelTurn(
-            turn_number=len(self.turns) + 1,
-            speaker_index=participant_index,
-            speaker_name=participant.name,
-            character=participant.character,
-            content=response_text,
-        )
-        self.turns.append(turn)
-        return turn
+            response_text = response_generator(
+                tokenized_prompt,
+                model,
+                tokenizer,
+                apply_shakespeare_style=self.shakespeare_style,
+            ).strip()
+
+            # A stop request may arrive while generation is running; discard stale output.
+            if self.is_stopped:
+                return None
+
+            if not response_text:
+                response_text = f"{participant.character} falls silent."
+
+            turn = MultiModelTurn(
+                turn_number=len(self.turns) + 1,
+                speaker_index=participant_index,
+                speaker_name=participant.name,
+                character=participant.character,
+                content=response_text,
+            )
+            self.turns.append(turn)
+            return turn
 
     def _system_prompt(self, participant: MultiModelParticipant) -> str:
         '''Return instructions that bind the current model to one speaker.'''
@@ -278,18 +289,3 @@ class MultiModelConversation:
             "turns": [turn.to_dict() for turn in self.turns],
             "last_turn": last_turn.to_dict() if last_turn is not None else None,
         }
-
-
-def _render_prompt_messages(prompt_messages: list[dict[str, str]]) -> str:
-    '''Render prompts using the same role-tag style as the main chat pipeline.'''
-    prompt_sections = []
-
-    for message in prompt_messages:
-        role = message.get("role")
-        content = str(message.get("content", "")).strip()
-        if role not in {"system", "user", "assistant"} or not content:
-            continue
-        prompt_sections.append(f"<|{role}|>\n{content}</s>\n")
-
-    prompt_sections.append("<|assistant|>\n")
-    return "".join(prompt_sections)
