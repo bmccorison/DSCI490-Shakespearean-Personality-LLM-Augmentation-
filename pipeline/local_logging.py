@@ -12,9 +12,25 @@ from uuid import uuid4
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOGGING_DIR = REPO_ROOT / "logging"
-# Env-var override that takes precedence over any constructor `category`. Used by the test
-# suite to redirect every log emitted during a run into logging/<date>/test/.
+# Env-var prefix used by the test suite to redirect logs into logging/<date>/test/.
 LOG_CATEGORY_ENV_VAR = "SHAKESPEARE_LOG_CATEGORY"
+
+
+def _category_path_parts(*categories: str | None) -> list[str]:
+    """Return safe relative path parts for optional log categories."""
+    path_parts: list[str] = []
+    for category in categories:
+        normalized_category = (category or "").strip().strip("/")
+        if not normalized_category:
+            continue
+
+        path_parts.extend(
+            path_part
+            for path_part in normalized_category.split("/")
+            if path_part and path_part not in {".", ".."}
+        )
+
+    return path_parts
 
 
 class LocalLogging:
@@ -30,11 +46,15 @@ class LocalLogging:
         logging_root = logging_dir or DEFAULT_LOGGING_DIR
         date_dir = logging_root / f"{self.created_at.month}_{self.created_at.day}"
 
-        # Env var overrides the constructor argument so test runs can funnel everything
-        # — including category-tagged loggers — into a single directory.
-        env_override = os.getenv(LOG_CATEGORY_ENV_VAR)
-        resolved_category = (env_override or category or "").strip().strip("/")
-        self.logging_dir = date_dir / resolved_category if resolved_category else date_dir
+        category_path_parts = _category_path_parts(
+            os.getenv(LOG_CATEGORY_ENV_VAR),
+            category,
+        )
+        self.logging_dir = (
+            date_dir.joinpath(*category_path_parts)
+            if category_path_parts
+            else date_dir
+        )
 
         self.conversation_id = uuid4().hex
         timestamp = self.created_at.strftime("%Y-%m-%d_%H-%M-%S")

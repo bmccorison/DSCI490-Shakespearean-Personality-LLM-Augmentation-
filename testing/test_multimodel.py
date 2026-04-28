@@ -1,7 +1,14 @@
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
+from pipeline.local_logging import LOG_CATEGORY_ENV_VAR
 from pipeline.multimodel import (
     HARD_MAX_TURNS,
+    MULTIMODEL_LOG_CATEGORY,
     MultiModelConversation,
     MultiModelParticipant,
 )
@@ -76,6 +83,66 @@ class MultiModelConversationTests(unittest.TestCase):
         self.assertIn("No one has spoken yet.", tokenizer.prompts[0])
         self.assertIn("Speaker 1 (Character 1): reply 1", tokenizer.prompts[1])
         self.assertTrue(conversation.is_complete)
+
+    def test_generates_multimodel_log_under_dated_category_directory(self):
+        tokenizer = FakeTokenizer()
+
+        def fake_loader(model_name, adapter_path):
+            return object(), tokenizer
+
+        def fake_response(tokenized_chat, model, tokenizer, apply_shakespeare_style=True):
+            return "reply"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch("pipeline.local_logging.DEFAULT_LOGGING_DIR", Path(temp_dir)):
+                with patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop(LOG_CATEGORY_ENV_VAR, None)
+                    conversation = MultiModelConversation(
+                        [make_participant(1), make_participant(2)],
+                        "Begin.",
+                        max_turns=1,
+                    )
+                    conversation.generate_next_turn(fake_loader, fake_response)
+
+            self.assertIsNotNone(conversation._logger)
+            log_file = conversation._logger.log_file
+            self.assertEqual(log_file.parent.name, MULTIMODEL_LOG_CATEGORY)
+            self.assertEqual(log_file.suffix, ".json")
+            self.assertTrue(log_file.exists())
+
+            created_at = conversation._logger.created_at
+            expected_date_dir = Path(temp_dir) / f"{created_at.month}_{created_at.day}"
+            self.assertEqual(log_file.parent.parent, expected_date_dir)
+
+            stored_messages = json.loads(log_file.read_text(encoding="utf-8"))
+            self.assertEqual(stored_messages[0]["initial_prompt"], "Begin.")
+            self.assertEqual(stored_messages[1]["speaker_name"], "Speaker 1")
+            self.assertEqual(stored_messages[1]["content"], "reply")
+
+    def test_log_category_override_preserves_multimodel_subdirectory(self):
+        tokenizer = FakeTokenizer()
+
+        def fake_loader(model_name, adapter_path):
+            return object(), tokenizer
+
+        def fake_response(tokenized_chat, model, tokenizer, apply_shakespeare_style=True):
+            return "reply"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch("pipeline.local_logging.DEFAULT_LOGGING_DIR", Path(temp_dir)):
+                with patch.dict(os.environ, {LOG_CATEGORY_ENV_VAR: "test"}):
+                    conversation = MultiModelConversation(
+                        [make_participant(1), make_participant(2)],
+                        "Begin.",
+                        max_turns=1,
+                    )
+                    conversation.generate_next_turn(fake_loader, fake_response)
+
+            self.assertIsNotNone(conversation._logger)
+            log_file = conversation._logger.log_file
+            self.assertEqual(log_file.parent.name, MULTIMODEL_LOG_CATEGORY)
+            self.assertEqual(log_file.parent.parent.name, "test")
+            self.assertTrue(log_file.exists())
 
     def test_stop_prevents_later_generation(self):
         conversation = MultiModelConversation(
