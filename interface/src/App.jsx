@@ -993,7 +993,7 @@ export default function App() {
   return (
     <div className="app-shell mx-auto flex min-h-screen w-full flex-col px-4 py-8 md:px-8">
       <header className="folio-header rounded-2xl border-2 border-maroon bg-white px-5 py-6 shadow-[0_10px_30px_rgba(165,46,48,0.16)]">
-        <h1 className="folio-title break-words font-hamlet text-[clamp(1.6rem,5vw,3.4rem)] leading-tight text-maroon">
+        <h1 className="folio-title break-words text-center font-hamlet text-[clamp(1.6rem,5vw,3.4rem)] leading-tight text-maroon">
           Shakespearean Character Language Models
         </h1>
       </header>
@@ -1170,9 +1170,9 @@ export default function App() {
               {messages.map((message) => (
                 <div
                   key={message.id}
-                  className={`message-row mb-3 flex max-w-[96%] items-start gap-2 ${
+                  className={`message-row mb-3 flex w-fit max-w-[96%] items-start gap-2 ${
                     message.role === "user"
-                      ? "ml-auto flex-row-reverse justify-end"
+                      ? "ml-auto flex-row-reverse"
                       : "mr-auto"
                   }`}
                 >

@@ -8,7 +8,9 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from pipeline.lm_generation import _render_prompt_messages
+from pipeline.local_logging import LocalLogging
 
+MULTIMODEL_LOG_CATEGORY = "multimodel"
 MIN_PARTICIPANTS = 2
 MAX_PARTICIPANTS = 4
 DEFAULT_MAX_TURNS = 12
@@ -121,6 +123,9 @@ class MultiModelConversation:
         self.context_turns = max(1, int(context_turns))
         self.turns: list[MultiModelTurn] = []
         self.is_stopped = False
+        # Lazy: only create the on-disk logger once the first turn is generated, so
+        # sessions that never advance leave no artifact behind.
+        self._logger: LocalLogging | None = None
 
     @staticmethod
     def _validate_participants(
@@ -231,7 +236,35 @@ class MultiModelConversation:
                 content=response_text,
             )
             self.turns.append(turn)
+            self._log_turn(turn, participant)
             return turn
+
+    def _ensure_logger(self) -> LocalLogging:
+        '''Create the multimodel logger on first use and seed it with session metadata.'''
+        if self._logger is None:
+            self._logger = LocalLogging(category=MULTIMODEL_LOG_CATEGORY)
+            self._logger.append_message({
+                "role": "user",
+                "session_id": self.session_id,
+                "initial_prompt": self.initial_prompt,
+                "max_turns": self.max_turns,
+                "shakespeare_style": self.shakespeare_style,
+                "participants": [participant.to_dict() for participant in self.participants],
+            })
+        return self._logger
+
+    def _log_turn(self, turn: MultiModelTurn, participant: MultiModelParticipant) -> None:
+        '''Persist one generated turn to the multimodel log on disk.'''
+        self._ensure_logger().append_message({
+            "role": "assistant",
+            "turn_number": turn.turn_number,
+            "speaker_index": turn.speaker_index,
+            "speaker_name": turn.speaker_name,
+            "character": turn.character,
+            "model_name": participant.model_name,
+            "adapter_path": participant.adapter_path,
+            "content": turn.content,
+        })
 
     def _system_prompt(self, participant: MultiModelParticipant) -> str:
         '''Return instructions that bind the current model to one speaker.'''
