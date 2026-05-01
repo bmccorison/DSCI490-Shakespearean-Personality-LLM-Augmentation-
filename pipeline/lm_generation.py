@@ -5,6 +5,7 @@ import json
 import os
 import re
 from pathlib import Path
+_current_message_index: int = 0
 
 # Prefer the expandable allocator unless the caller already configured one.
 if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ and "PYTORCH_ALLOC_CONF" not in os.environ:
@@ -32,7 +33,7 @@ DEFAULT_CHARACTER = "Hamlet"
 DEFAULT_WORK = "Hamlet"
 # Baseline generation controls; each can be overridden by environment variables.
 DEFAULT_MAX_CHAT_HISTORY_TURNS = 4
-DEFAULT_MAX_NEW_TOKENS = 160
+DEFAULT_MAX_NEW_TOKENS = 256
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_TOP_P = 0.9
 DEFAULT_REPETITION_PENALTY = 1.15
@@ -162,50 +163,52 @@ def set_character_context(character: str, work: str) -> None:
 
 
 def _ensure_conversation_logger() -> LocalLogging:
-    '''Start local logging only after the first user message arrives.'''
     global conversation_logger
-
     if conversation_logger is None:
         conversation_logger = LocalLogging()
+        # Immediately flush the system prompt so the file exists on disk
+        conversation_logger._flush()
     return conversation_logger
 
 
-def set_conversation_model(model_name: str, adapter_path: str) -> None:
-    '''Record the active model and adapter on the current conversation logger.'''
-    global conversation_logger
-
-    if conversation_logger is not None:
-        conversation_logger.set_model(model_name, adapter_path)
-
-
 def add_chat_history(user_msg=None, model_response=None):
-    ''' Add the user message and/or model response to the conversation history. '''
-    global conversation_logger
+    global conversation_logger, _current_message_index
 
-    # Append whichever side of the turn was provided by caller.
     if user_msg is not None:
         user_message = {"role": "user", "content": user_msg}
         messages.append(user_message)
         _ensure_conversation_logger().append_message(user_message)
+        _current_message_index += 1
     if model_response is not None:
         assistant_message = {"role": "assistant", "content": model_response}
         messages.append(assistant_message)
         if conversation_logger is not None:
             conversation_logger.append_message(assistant_message)
-    # Keep prompt size bounded so response latency stays predictable.
+        _current_message_index += 1
+
     _trim_chat_history()
 
 
 def refresh_chat_history():
-    ''' Called when a new conversation starts to clear the conversation history. '''
-    global conversation_logger
+    global conversation_logger, _current_message_index
 
     messages.clear()
     system_message = {"role": "system", "content": get_system_prompt()}
     messages.append(system_message)
 
     conversation_logger = None
+    _current_message_index = 0
 
+def get_conversation_id() -> str:
+    '''Return the current conversation ID for frontend feedback tracking.'''
+    if conversation_logger is None:
+        return ""
+    return conversation_logger.conversation_id
+
+
+def get_message_index() -> int:
+    '''Return the current message index for frontend feedback targeting.'''
+    return _current_message_index - 1
 
 def _render_prompt_messages(prompt_messages: list[dict[str, str]]) -> str:
     '''Render the chat history in the explicit role-tag format used by TinyLlama chat models.'''

@@ -13,6 +13,8 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 import scipy.io.wavfile as wav
 import uvicorn
+from pydantic import BaseModel
+from pipeline.feedback_store import save_feedback, load_feedback
 
 from pipeline.lm_generation import (
     generate_output,
@@ -20,7 +22,6 @@ from pipeline.lm_generation import (
     model_selection,
     get_model,
     set_character_context,
-    set_conversation_model,
 )
 
 # from pipeline.rag import get_context  # TODO Implement
@@ -214,6 +215,56 @@ def _resolve_piper_model_path(character: str) -> Path | None:
         return None
     return resolved_path
 
+class SpanFeedback(BaseModel):
+    text: str
+    polarity: str  # "good" or "bad"
+
+class MessageFeedback(BaseModel):
+    conversation_id: str
+    message_index: int
+    vote: str        # "up" or "down"
+    spans: list[SpanFeedback] = []
+
+@app.post("/api/feedback")
+def submit_feedback(feedback: MessageFeedback):
+    '''Endpoint to receive per-message votes and span highlights from the frontend.'''
+    from local_logging import DEFAULT_LOGGING_DIR
+
+    # Find the log file matching this conversation ID
+    matching_files = list(DEFAULT_LOGGING_DIR.rglob(f"*{feedback.conversation_id}*.json"))
+    if not matching_files:
+        raise HTTPException(status_code=404, detail="Conversation log not found.")
+
+    log_file = matching_files[0]
+
+    # Load existing feedback so we don't overwrite prior entries
+    existing_feedback = load_feedback(log_file)
+
+    # Replace or append feedback for this message index
+    existing_feedback = [
+        record for record in existing_feedback
+        if record.get("message_index") != feedback.message_index
+    ]
+    existing_feedback.append({
+        "message_index": feedback.message_index,
+        "vote": feedback.vote,
+        "spans": [{"text": s.text, "polarity": s.polarity} for s in feedback.spans],
+    })
+
+    save_feedback(log_file, existing_feedback)
+    return {"message": "Feedback saved.", "message_index": feedback.message_index}
+
+
+@app.get("/api/feedback/{conversation_id}")
+def get_feedback(conversation_id: str):
+    '''Endpoint to retrieve saved feedback for a conversation.'''
+    from local_logging import DEFAULT_LOGGING_DIR
+
+    matching_files = list(DEFAULT_LOGGING_DIR.rglob(f"*{conversation_id}*.json"))
+    if not matching_files:
+        raise HTTPException(status_code=404, detail="Conversation log not found.")
+
+    return {"feedback": load_feedback(matching_files[0])}
 
 def _generate_piper_tts_audio(text: str, character: str) -> bytes:
     '''Generate WAV audio with Piper when binary and voice model are available.'''
@@ -384,7 +435,6 @@ def select_model(model_name: str, adapter_path: str):
         model, tokenizer = get_model(normalized_model_name, normalized_adapter_path)  # Load and cache model artifacts
         loaded_model_name = normalized_model_name
         loaded_adapter_path = normalized_adapter_path
-        set_conversation_model(normalized_model_name, normalized_adapter_path)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
