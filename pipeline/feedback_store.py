@@ -9,15 +9,17 @@ def save_feedback(
     log_file: Path,
     feedback: list[dict[str, Any]],
 ) -> None:
-    feedback_file = log_file.with_suffix(".feedback.json")
+    # Strip suffixes until we get the base name without any .json or .feedback
+    base = log_file.parent / log_file.name.replace(".feedback.json", "").replace(".json", "")
+    feedback_file = base.with_suffix(".feedback.json")
     feedback_file.write_text(
         json.dumps(feedback, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
-
 def load_feedback(log_file: Path) -> list[dict[str, Any]]:
-    feedback_file = log_file.with_suffix(".feedback.json")
+    base = log_file.parent / log_file.name.replace(".feedback.json", "").replace(".json", "")
+    feedback_file = base.with_suffix(".feedback.json")
     if not feedback_file.exists():
         return []
     try:

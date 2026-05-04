@@ -208,6 +208,7 @@ def get_conversation_id() -> str:
 
 def get_message_index() -> int:
     '''Return the current message index for frontend feedback targeting.'''
+    print(f"DEBUG get_message_index called, returning: {_current_message_index - 1}")
     return _current_message_index - 1
 
 def _render_prompt_messages(prompt_messages: list[dict[str, str]]) -> str:
