@@ -292,7 +292,6 @@ summary:focus-visible {
   position: relative;
   border-radius: 3px 2px 4px 2px;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.62);
-  clip-path: polygon(0 1%, 98% 0, 100% 98%, 2% 100%);
 }
 
 .assistant-bubble {

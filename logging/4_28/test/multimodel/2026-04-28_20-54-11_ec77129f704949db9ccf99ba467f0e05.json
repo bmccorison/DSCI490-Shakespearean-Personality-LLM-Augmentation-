@@ -1,0 +1,35 @@
+[
+  {
+    "role": "user",
+    "session_id": "e103df639fdd461fa12ef188881289cb",
+    "initial_prompt": "Begin.",
+    "max_turns": 12,
+    "shakespeare_style": false,
+    "participants": [
+      {
+        "name": "A",
+        "character": "Hamlet",
+        "work": "Hamlet",
+        "model_name": "ModelA",
+        "adapter_path": "__base__"
+      },
+      {
+        "name": "B",
+        "character": "Ophelia",
+        "work": "Hamlet",
+        "model_name": "ModelA",
+        "adapter_path": "__base__"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "turn_number": 1,
+    "speaker_index": 0,
+    "speaker_name": "A",
+    "character": "Hamlet",
+    "model_name": "ModelA",
+    "adapter_path": "__base__",
+    "content": "says 1"
+  }
+]

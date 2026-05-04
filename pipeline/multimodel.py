@@ -13,8 +13,8 @@ from pipeline.local_logging import LocalLogging
 MULTIMODEL_LOG_CATEGORY = "multimodel"
 MIN_PARTICIPANTS = 2
 MAX_PARTICIPANTS = 4
-DEFAULT_MAX_TURNS = 12
-HARD_MAX_TURNS = 20
+DEFAULT_MAX_TURNS = 20
+HARD_MAX_TURNS = 50
 DEFAULT_CONTEXT_TURNS = 8
 
 ModelLoader = Callable[[str, str], tuple[Any, Any]]
