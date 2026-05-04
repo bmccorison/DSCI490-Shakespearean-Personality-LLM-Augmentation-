@@ -766,9 +766,90 @@ def model_selection():
     return available_models
 
 
+def validate_and_resolve_adapter(model_name: str, adapter_path: str) -> Path | None:
+    '''Validate adapter_path against the model's published adapter list.
+
+    Returns None for the base-model-only pseudo-adapter, or the resolved on-disk Path otherwise.
+    Raises ValueError for unknown or incompatible adapters and FileNotFoundError for missing paths.
+    '''
+    selected_model = next(
+        (m for m in model_selection() if m["name"] == model_name),
+        None,
+    )
+    if selected_model is None:
+        raise ValueError(f"Model is not available: {model_name}")
+
+    selected_adapter = next(
+        (a for a in selected_model["adapters"] if a["path"] == adapter_path),
+        None,
+    )
+    if selected_adapter is None:
+        raise ValueError(
+            f"Adapter path '{adapter_path}' is not valid for model '{model_name}'."
+        )
+
+    if _is_base_model_adapter(selected_adapter["path"]):
+        return None
+
+    resolved = resolve_adapter_path(selected_adapter["path"])
+    if not resolved.exists():
+        raise FileNotFoundError(f"Adapter path does not exist: {resolved}")
+    if not _is_adapter_compatible_with_model(model_name, resolved):
+        adapter_base = _adapter_base_model_name(resolved)
+        raise ValueError(
+            "Adapter is incompatible with selected base model. "
+            f"Adapter expects '{adapter_base}', but selected model is '{model_name}'."
+        )
+    return resolved
+
+
+def load_base_model_and_tokenizer(model_name: str):
+    '''Load the base model and tokenizer without applying any LoRA adapter.
+
+    Used by the hot-swap path so the base model can be kept resident across adapter switches.
+    Note: unlike get_model, this always loads the base model's tokenizer even when an adapter
+    ships its own tokenizer.json — that edge case only applies to the single-chat full-load path.
+    '''
+    if not any(m["name"] == model_name for m in model_selection()):
+        raise ValueError(f"Model is not available: {model_name}")
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    preferred_device, model_load_kwargs = _model_load_config()
+    base_model = _load_base_model(model_name, model_load_kwargs)
+    if preferred_device == "mps" and hasattr(base_model, "to"):
+        base_model = base_model.to(preferred_device)
+    base_model.eval()
+    return base_model, tokenizer
+
+
+def attach_named_adapter(model, resolved_path: Path, slot_name: str) -> PeftModel:
+    '''Wrap or hot-swap a named LoRA adapter onto an existing model.
+
+    On first call with a bare base model, wraps it in a PeftModel. On subsequent calls with an
+    existing PeftModel, loads the adapter alongside any resident ones and activates it — avoiding
+    a full base model reload when participants share the same base model.
+    '''
+    if isinstance(model, PeftModel):
+        model.load_adapter(str(resolved_path), adapter_name=slot_name)
+        model.set_adapter(slot_name)
+        return model
+
+    try:
+        wrapped = PeftModel.from_pretrained(model, str(resolved_path), adapter_name=slot_name)
+    except RuntimeError as exc:
+        raise ValueError(
+            "Failed to load adapter weights. "
+            "This checkpoint is likely incompatible with the selected base model architecture."
+        ) from exc
+    wrapped.eval()
+    return wrapped
+
+
 def get_model(model_name: str, adapter_path: str):
     ''' Load the base Hugging Face model/tokenizer and apply PEFT adapter, then return both. '''
-    # Normalize user-selected names from query params/UI form fields.
     normalized_model_name = model_name.strip()
     normalized_adapter_path = adapter_path.strip()
 
@@ -777,39 +858,9 @@ def get_model(model_name: str, adapter_path: str):
     if not normalized_adapter_path:
         raise ValueError("Adapter path is required.")
 
-    selected_model = next(
-        (candidate for candidate in model_selection() if candidate["name"] == normalized_model_name),
-        None,
-    )
-    if selected_model is None:
-        raise ValueError(f"Model is not available: {normalized_model_name}")
+    resolved_adapter_path = validate_and_resolve_adapter(normalized_model_name, normalized_adapter_path)
 
-    # Validate the adapter against the chosen model's current adapter list.
-    selected_adapter = next(
-        (candidate for candidate in selected_model["adapters"] if candidate["path"] == normalized_adapter_path),
-        None,
-    )
-    if selected_adapter is None:
-        raise ValueError(
-            f"Adapter path '{normalized_adapter_path}' is not valid for model '{normalized_model_name}'."
-        )
-
-    selected_adapter_path = selected_adapter["path"]
-    use_base_model_only = _is_base_model_adapter(selected_adapter_path)
-    resolved_adapter_path = None
-    if not use_base_model_only:
-        # Resolve and verify on-disk adapter checkpoint path.
-        resolved_adapter_path = resolve_adapter_path(selected_adapter_path)
-        if not resolved_adapter_path.exists():
-            raise FileNotFoundError(f"Adapter path does not exist: {resolved_adapter_path}")
-        if not _is_adapter_compatible_with_model(normalized_model_name, resolved_adapter_path):
-            adapter_base_model = _adapter_base_model_name(resolved_adapter_path)
-            raise ValueError(
-                "Adapter is incompatible with selected base model. "
-                f"Adapter expects '{adapter_base_model}', but selected model is '{normalized_model_name}'."
-            )
-
-    # Prefer adapter-local tokenizer if available, otherwise fall back to base model tokenizer.
+    # Prefer adapter-local tokenizer when available, otherwise use base model tokenizer.
     tokenizer_source = (
         str(resolved_adapter_path)
         if resolved_adapter_path is not None and (resolved_adapter_path / "tokenizer.json").exists()
@@ -817,25 +868,17 @@ def get_model(model_name: str, adapter_path: str):
     )
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
     if tokenizer.pad_token is None:
-        # Ensure padding works for generation helpers expecting a pad token.
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Load the base model
     preferred_device, model_load_kwargs = _model_load_config()
-    base_model = _load_base_model(
-        normalized_model_name,
-        model_load_kwargs,
-    )
+    base_model = _load_base_model(normalized_model_name, model_load_kwargs)
     if preferred_device == "mps" and hasattr(base_model, "to"):
-        # MPS models need explicit transfer after loading.
         base_model = base_model.to(preferred_device)
 
-    if use_base_model_only:
-        # Base-only path skips LoRA wrapping entirely.
+    if resolved_adapter_path is None:
         base_model.eval()
         return base_model, tokenizer
 
-    # Add the LoRA adapter and return
     try:
         model = PeftModel.from_pretrained(base_model, str(resolved_adapter_path))
     except RuntimeError as exc:

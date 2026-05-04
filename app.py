@@ -8,19 +8,32 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import scipy.io.wavfile as wav
 import uvicorn
 
 from pipeline.lm_generation import (
+    BASE_MODEL_ADAPTER_PATH,
+    attach_named_adapter,
     generate_output,
-    refresh_chat_history,
+    load_base_model_and_tokenizer,
     model_selection,
-    get_model,
+    refresh_chat_history,
     set_character_context,
-    set_conversation_model,
+    validate_and_resolve_adapter,
+)
+from pipeline.multimodel import (
+    DEFAULT_MAX_TURNS as DEFAULT_MULTIMODEL_MAX_TURNS,
+    HARD_MAX_TURNS as HARD_MULTIMODEL_MAX_TURNS,
+    MAX_PARTICIPANTS as MAX_MULTIMODEL_PARTICIPANTS,
+    MIN_PARTICIPANTS as MIN_MULTIMODEL_PARTICIPANTS,
+    MultiModelConversation,
+    MultiModelParticipant,
+    validate_max_turns as validate_multimodel_max_turns,
 )
 
 # from pipeline.rag import get_context  # TODO Implement
@@ -43,8 +56,7 @@ _bark_preload_models = None
 _bark_models_preloaded = False
 _bark_load_error = None
 
-# TODO: Refactor the support multiple chat histories and characters
-app = FastAPI()  # Initialize the FastAPI app
+app = FastAPI()
 default_cors_origins = "http://localhost:6969,http://127.0.0.1:6969"
 configured_cors_origins = os.getenv("CORS_ALLOW_ORIGINS", default_cors_origins)
 allowed_origins = [origin.strip() for origin in configured_cors_origins.split(",") if origin.strip()]
@@ -56,27 +68,65 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-model = None  # Placeholder for the LLM model, to be loaded in by user
-tokenizer = None
-loaded_model_name = ""
-loaded_adapter_path = ""
+# Resident model state — one base model is kept loaded across adapter swaps.
+# LoRA adapters are stored by name in a single PeftModel to avoid redundant base reloads.
+_resident_model_name = ""
+_resident_model = None
+_resident_tokenizer = None
+_resident_adapter_slots: dict[str, str] = {}  # adapter_path → named slot in PeftModel
+_next_slot = 0
+_model_lock = threading.Lock()
+
+# Single-chat selection — persisted across /api/select_model calls.
+selected_chat_model_name = ""
+selected_chat_adapter_path = ""
+
+active_multimodel_conversation: MultiModelConversation | None = None
+multimodel_default_max_turns = DEFAULT_MULTIMODEL_MAX_TURNS
 
 
-def _release_loaded_model() -> None:
-    '''Release the currently loaded model/tokenizer and clear accelerator caches.'''
-    global model, tokenizer, loaded_model_name, loaded_adapter_path
+class MultiModelParticipantRequest(BaseModel):
+    '''Request payload for one model-to-model speaker.'''
 
-    previous_model = model
-    previous_tokenizer = tokenizer
-    model = None
-    tokenizer = None
-    loaded_model_name = ""
-    loaded_adapter_path = ""
+    name: str
+    character: str
+    work: str
+    model_name: str
+    adapter_path: str
 
-    if previous_model is None and previous_tokenizer is None:
+
+class MultiModelStartRequest(BaseModel):
+    '''Request payload used to create a new multimodel conversation.'''
+
+    initial_prompt: str
+    participants: list[MultiModelParticipantRequest]
+    max_turns: int | None = None
+    shakespeare_style: bool = False
+
+
+class MultiModelConfigRequest(BaseModel):
+    '''Request payload for updating multimodel defaults.'''
+
+    max_turns: int
+
+
+def _release_resident_model() -> None:
+    '''Release the resident base model and all loaded adapter slots.'''
+    global _resident_model_name, _resident_model, _resident_tokenizer
+    global _resident_adapter_slots, _next_slot
+
+    prev_model = _resident_model
+    prev_tokenizer = _resident_tokenizer
+    _resident_model = None
+    _resident_tokenizer = None
+    _resident_model_name = ""
+    _resident_adapter_slots = {}
+    _next_slot = 0
+
+    if prev_model is None and prev_tokenizer is None:
         return
 
-    del previous_model, previous_tokenizer
+    del prev_model, prev_tokenizer
     gc.collect()
 
     try:
@@ -91,6 +141,48 @@ def _release_loaded_model() -> None:
     cuda.empty_cache()
     if hasattr(cuda, "ipc_collect"):
         cuda.ipc_collect()
+
+
+def _ensure_loaded_model(model_name: str, adapter_path: str):
+    '''Return the active model and tokenizer, loading or hot-swapping adapters as needed.
+
+    The base model stays resident as long as model_name does not change. LoRA adapters are
+    loaded by name into a single PeftModel, so switching between participants with the same
+    base model costs only a set_adapter call rather than a full model reload.
+
+    Reverting to the base-model-only pseudo-adapter requires a full reload because extracting
+    the bare base from a PeftModel is not supported without reloading from disk.
+    '''
+    global _resident_model_name, _resident_model, _resident_tokenizer
+    global _resident_adapter_slots, _next_slot
+
+    norm_model = model_name.strip()
+    norm_adapter = adapter_path.strip()
+    if not norm_model or not norm_adapter:
+        raise ValueError("Model name and adapter path are required.")
+
+    with _model_lock:
+        base_only = norm_adapter == BASE_MODEL_ADAPTER_PATH
+        peft_model_loaded = hasattr(_resident_model, "set_adapter")
+
+        # A base-model-only participant after adapter-bearing ones forces a reload because
+        # we cannot cleanly strip PeftModel wrapping without touching disk.
+        if norm_model != _resident_model_name or (base_only and peft_model_loaded):
+            _release_resident_model()
+            _resident_model, _resident_tokenizer = load_base_model_and_tokenizer(norm_model)
+            _resident_model_name = norm_model
+
+        if not base_only:
+            if norm_adapter not in _resident_adapter_slots:
+                resolved = validate_and_resolve_adapter(norm_model, norm_adapter)
+                slot_name = f"slot_{_next_slot}"
+                _next_slot += 1
+                _resident_model = attach_named_adapter(_resident_model, resolved, slot_name)
+                _resident_adapter_slots[norm_adapter] = slot_name
+            else:
+                _resident_model.set_adapter(_resident_adapter_slots[norm_adapter])
+
+        return _resident_model, _resident_tokenizer
 
 
 def _resolve_bark_use_gpu() -> bool:
@@ -318,23 +410,32 @@ def _generate_fallback_tts_audio(text: str, character: str = "Hamlet") -> bytes:
 @app.get("/api/generate_response")
 def generate_response_endpoint(question: str, shakespeare_style: bool = False):
     ''' Endpoint to trigger the response pipeline given a user question. '''
-    global model, tokenizer
+    global selected_chat_model_name, selected_chat_adapter_path
 
-    if model is None or tokenizer is None:
+    if not selected_chat_model_name or not selected_chat_adapter_path:
         raise HTTPException(status_code=400, detail="Model is not loaded. Call /api/select_model first.")
 
     # TODO: wire in RAG once vector store/context plumbing is implemented.
     rag_context = None
-    
-    # Generate the response JSON from the LLM {response: str, confidence_score: int}
+
+    try:
+        active_model, active_tokenizer = _ensure_loaded_model(
+            selected_chat_model_name,
+            selected_chat_adapter_path,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     response_text = generate_output(
         question,
-        tokenizer,
-        model,
+        active_tokenizer,
+        active_model,
         rag_context,
         apply_shakespeare_style=shakespeare_style,
     )
-    
+
     return {"response": response_text}
 
 
@@ -363,28 +464,14 @@ def select_character(character: str, work: str):
 @app.get("/api/select_model")
 def select_model(model_name: str, adapter_path: str):
     ''' Endpoint to select the specific LLM for response generation. '''
-    global model, tokenizer, loaded_model_name, loaded_adapter_path
+    global selected_chat_model_name, selected_chat_adapter_path
 
     normalized_model_name = model_name.strip()
     normalized_adapter_path = adapter_path.strip()
-    if (
-        model is not None
-        and tokenizer is not None
-        and loaded_model_name == normalized_model_name
-        and loaded_adapter_path == normalized_adapter_path
-    ):
-        return {
-            "message": "Model already loaded.",
-            "model_name": normalized_model_name,
-            "adapter_path": normalized_adapter_path,
-        }
-
-    _release_loaded_model()
     try:
-        model, tokenizer = get_model(normalized_model_name, normalized_adapter_path)  # Load and cache model artifacts
-        loaded_model_name = normalized_model_name
-        loaded_adapter_path = normalized_adapter_path
-        set_conversation_model(normalized_model_name, normalized_adapter_path)
+        _ensure_loaded_model(normalized_model_name, normalized_adapter_path)
+        selected_chat_model_name = normalized_model_name
+        selected_chat_adapter_path = normalized_adapter_path
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -400,7 +487,116 @@ def select_model(model_name: str, adapter_path: str):
 @app.get("/api/get_models")
 def get_models():
     ''' Endpoint to get the list of available models and adapters. '''
-    return model_selection()  # Return the full model list as a JSON
+    return model_selection()
+
+
+def _empty_multimodel_session() -> dict[str, object]:
+    '''Return a stable idle payload for frontend session polling.'''
+    return {
+        "active": False,
+        "status": "idle",
+        "is_stopped": False,
+        "is_complete": True,
+        "turn_count": 0,
+        "turns": [],
+        "last_turn": None,
+        "next_speaker": None,
+    }
+
+
+@app.get("/api/multimodel/config")
+def get_multimodel_config():
+    '''Return defaults and hard limits for model-to-model conversations.'''
+    return {
+        "default_max_turns": multimodel_default_max_turns,
+        "hard_max_turns": HARD_MULTIMODEL_MAX_TURNS,
+        "min_participants": MIN_MULTIMODEL_PARTICIPANTS,
+        "max_participants": MAX_MULTIMODEL_PARTICIPANTS,
+    }
+
+
+@app.post("/api/multimodel/config")
+def update_multimodel_config(config: MultiModelConfigRequest):
+    '''Update the default multimodel turn count used by new sessions.'''
+    global multimodel_default_max_turns
+
+    try:
+        multimodel_default_max_turns = validate_multimodel_max_turns(config.max_turns)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return get_multimodel_config()
+
+
+@app.post("/api/multimodel/start")
+def start_multimodel_conversation(payload: MultiModelStartRequest):
+    '''Create a new model-to-model conversation session without generating yet.'''
+    global active_multimodel_conversation
+
+    try:
+        participants = [
+            MultiModelParticipant(
+                name=participant.name,
+                character=participant.character,
+                work=participant.work,
+                model_name=participant.model_name,
+                adapter_path=participant.adapter_path,
+            )
+            for participant in payload.participants
+        ]
+        max_turns = (
+            multimodel_default_max_turns
+            if payload.max_turns is None
+            else payload.max_turns
+        )
+        active_multimodel_conversation = MultiModelConversation(
+            participants=participants,
+            initial_prompt=payload.initial_prompt,
+            max_turns=max_turns,
+            shakespeare_style=payload.shakespeare_style,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return active_multimodel_conversation.to_dict()
+
+
+@app.post("/api/multimodel/next")
+def generate_multimodel_turn():
+    '''Generate the next round-robin turn for the active multimodel session.'''
+    if active_multimodel_conversation is None:
+        raise HTTPException(status_code=400, detail="No multimodel session is active.")
+
+    if active_multimodel_conversation.is_complete:
+        return active_multimodel_conversation.to_dict()
+
+    try:
+        next_turn = active_multimodel_conversation.generate_next_turn(_ensure_loaded_model)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return active_multimodel_conversation.to_dict(last_turn=next_turn)
+
+
+@app.post("/api/multimodel/stop")
+def stop_multimodel_conversation():
+    '''Stop the active model-to-model conversation before any later turn.'''
+    if active_multimodel_conversation is None:
+        return _empty_multimodel_session()
+
+    active_multimodel_conversation.stop()
+    return active_multimodel_conversation.to_dict()
+
+
+@app.get("/api/multimodel/session")
+def get_multimodel_session():
+    '''Return the current model-to-model conversation session, if any.'''
+    if active_multimodel_conversation is None:
+        return _empty_multimodel_session()
+
+    return active_multimodel_conversation.to_dict()
 
 
 @app.post("/api/tts")
@@ -422,23 +618,19 @@ def generate_tts(text: str, character: str = "Hamlet"):
             ) from fallback_error
         return Response(content=fallback_audio, media_type="audio/wav")
 
-    # Generate the speech (TODO make seperate voices for each character)
     try:
         audio_array = generate_audio(
             normalized_text,
             history_prompt=_resolve_bark_history_prompt(character),
-        )  # TODO: Refactor to use character specific voices (may need to switch TTS library to support voice cloning)
+        )  # TODO: Refactor to use character specific voices
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"TTS generation failed: {exc}") from exc
 
-    # Save to buffer to send over HTTP
     buffer = io.BytesIO()
     wav.write(buffer, sample_rate, audio_array)
     buffer.seek(0)
     return Response(content=buffer.read(), media_type="audio/wav")
 
 if __name__ == "__main__":
-    # TODO initialize models, initialize vector stores, etc. here before starting the server
     backend_port = int(os.getenv("BACKEND_PORT", os.getenv("PORT", "8000")))
     uvicorn.run(app, host="0.0.0.0", port=backend_port)
-    

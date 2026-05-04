@@ -1,0 +1,92 @@
+[
+  {
+    "role": "user",
+    "session_id": "af72e45609b1409cb43a0dcee7c8822f",
+    "initial_prompt": "Begin.",
+    "max_turns": 6,
+    "shakespeare_style": false,
+    "participants": [
+      {
+        "name": "Speaker1",
+        "character": "Character1",
+        "work": "Hamlet",
+        "model_name": "ModelA",
+        "adapter_path": "__base__"
+      },
+      {
+        "name": "Speaker2",
+        "character": "Character2",
+        "work": "Hamlet",
+        "model_name": "ModelA",
+        "adapter_path": "__base__"
+      },
+      {
+        "name": "Speaker3",
+        "character": "Character3",
+        "work": "Hamlet",
+        "model_name": "ModelA",
+        "adapter_path": "__base__"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "turn_number": 1,
+    "speaker_index": 0,
+    "speaker_name": "Speaker1",
+    "character": "Character1",
+    "model_name": "ModelA",
+    "adapter_path": "__base__",
+    "content": "reply 1"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 2,
+    "speaker_index": 1,
+    "speaker_name": "Speaker2",
+    "character": "Character2",
+    "model_name": "ModelA",
+    "adapter_path": "__base__",
+    "content": "reply 2"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 3,
+    "speaker_index": 2,
+    "speaker_name": "Speaker3",
+    "character": "Character3",
+    "model_name": "ModelA",
+    "adapter_path": "__base__",
+    "content": "reply 3"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 4,
+    "speaker_index": 0,
+    "speaker_name": "Speaker1",
+    "character": "Character1",
+    "model_name": "ModelA",
+    "adapter_path": "__base__",
+    "content": "reply 4"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 5,
+    "speaker_index": 1,
+    "speaker_name": "Speaker2",
+    "character": "Character2",
+    "model_name": "ModelA",
+    "adapter_path": "__base__",
+    "content": "reply 5"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 6,
+    "speaker_index": 2,
+    "speaker_name": "Speaker3",
+    "character": "Character3",
+    "model_name": "ModelA",
+    "adapter_path": "__base__",
+    "content": "reply 6"
+  }
+]
