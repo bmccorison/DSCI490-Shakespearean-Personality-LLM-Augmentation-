@@ -26,7 +26,7 @@ def model_list() -> list[dict]:
         {
             "name": "LiquidAI/LFM2-2.6B",
             "description": "A 2.6B parameter model",
-            "default_adapter_path": "models/lora_hamlet_3",
+            "default_adapter_path": "models/lora_hamlet_5_2",
             "adapters": [
                 {
                     "name": "hamlet_lora_3",
@@ -37,6 +37,16 @@ def model_list() -> list[dict]:
                     "name": "hamlet_lora_5",
                     "path": "models/lora_hamlet_5",
                     "description": "Context-aware LoRA adapter trained on speaker-aware message-style dialogue windows for Hamlet.",
+                },
+                {
+                    "name": "hamlet_lora_5_2",
+                    "path": "models/lora_hamlet_5_2",
+                    "description": "Improved context-aware LoRA adapter — excludes Act 5 Scene 2 and enforces scene boundary context windows.",
+                },
+                {
+                    "name": "hamlet_lora_5_3",
+                    "path": "models/lora_hamlet_5_3",
+                    "description": "Testing Model performance with simple dynamic system prompts",
                 },
             ],
         },

@@ -170,6 +170,14 @@ def _ensure_conversation_logger() -> LocalLogging:
     return conversation_logger
 
 
+def set_conversation_model(model_name: str, adapter_path: str) -> None:
+    '''Record the active model and adapter on the current conversation logger.'''
+    global conversation_logger
+
+    if conversation_logger is not None:
+        conversation_logger.set_model(model_name, adapter_path)
+
+
 def add_chat_history(user_msg=None, model_response=None):
     ''' Add the user message and/or model response to the conversation history. '''
     global conversation_logger

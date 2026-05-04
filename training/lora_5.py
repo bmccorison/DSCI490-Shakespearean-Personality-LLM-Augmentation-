@@ -67,7 +67,7 @@ def parse_args(repo_root: Path) -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        default=str(repo_root / "models" / "lora_hamlet_5"),
+        default=str(repo_root / "models" / "lora_hamlet_5_3"),
         help="Directory to save the trained LoRA adapter and tokenizer.",
     )
     parser.add_argument(
@@ -85,6 +85,29 @@ def parse_args(repo_root: Path) -> argparse.Namespace:
         "--include-last-speaker-line",
         action="store_true",
         help="Include the most recent prior target-speaker line as assistant context.",
+    )
+    parser.add_argument(
+        "--no-exclude-act5-scene2",
+        dest="exclude_act5_scene2",
+        action="store_false",
+        help="Disable Act 5 Scene 2 exclusion (default: enabled).",
+    )
+    parser.set_defaults(exclude_act5_scene2=True)
+    parser.add_argument(
+        "--no-prevent-scene-bleed",
+        dest="prevent_scene_bleed",
+        action="store_false",
+        help="Disable scene bleed prevention (default: enabled).",
+    )
+    parser.set_defaults(prevent_scene_bleed=True)
+    parser.add_argument(
+        "--dynamic-system-prompt",
+        dest="use_dynamic_system_prompt",
+        action="store_true",
+        help=(
+            "Resolve a relationship-aware system prompt per record based on who "
+            "Hamlet is directly addressing (default: disabled)."
+        ),
     )
     parser.add_argument(
         "--system-prompt",
@@ -440,7 +463,10 @@ def main() -> None:
         speaker=args.speaker,
         k=args.k,
         include_last_speaker_line=args.include_last_speaker_line,
+        exclude_act5_scene2=args.exclude_act5_scene2,
+        prevent_scene_bleed=args.prevent_scene_bleed,
         system_prompt=args.system_prompt,
+        use_dynamic_system_prompt=args.use_dynamic_system_prompt,
         encoding=args.encoding,
     )
     if args.limit:

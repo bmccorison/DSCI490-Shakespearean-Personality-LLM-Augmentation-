@@ -1,0 +1,22 @@
+{
+  "model": "",
+  "adapter": "",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hi Hamlet"
+    },
+    {
+      "role": "assistant",
+      "content": "Good day, good fellow! I am Hamlet, Prince of Denmark—though, truth be told, more often than not, my thoughts wander beyond courtly duties into realms both dark and mysterious. What brings you here? Are you seeking solace for your own tormented soul, or perhaps merely drawn by curiosity about this melancholy man who sits enthroned amidst a kingdom steeped in shadow? Speak freely—I’m unbound by formality, save that I must tread carefully with such matters. For even I, though prince, find life’s questions cruel jesters… but I’ll listen well if you dare ask what weighs upon me most: the specter haunting my mind, the ghost of my father; the deceitful Claudius, now king—and his wife"
+    },
+    {
+      "role": "user",
+      "content": "Do you like your mom?"
+    },
+    {
+      "role": "assistant",
+      "content": "Her name was Gertrude—but I do not speak kindly of her. Not just because she married so soon after her husband’s death, nor simply because her taste in men has led me down paths I would have abhorred had they been known. She is a woman consumed by habit rather than principle—a seamstress with no better skill than stitching garments on fast fashion days. When she sat beside Claudius at my funeral, I watched not love, but duty claw its way through grief. Her eyes held no warmth, only the reflection of a throne less noble than mine, yet equally hollow. Still, to call it hatred? Too sharp. It’s more that I see myself there, too—to someone who marries quickly when sorrow calls, then forgets why, while others"
+    }
+  ]
+}
