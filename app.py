@@ -22,6 +22,8 @@ from pipeline.lm_generation import (
     model_selection,
     get_model,
     set_character_context,
+    get_conversation_id,
+    get_message_index,     # bruh
 )
 
 # from pipeline.rag import get_context  # TODO Implement
@@ -228,7 +230,7 @@ class MessageFeedback(BaseModel):
 @app.post("/api/feedback")
 def submit_feedback(feedback: MessageFeedback):
     '''Endpoint to receive per-message votes and span highlights from the frontend.'''
-    from local_logging import DEFAULT_LOGGING_DIR
+    from pipeline.local_logging import DEFAULT_LOGGING_DIR
 
     # Find the log file matching this conversation ID
     matching_files = list(DEFAULT_LOGGING_DIR.rglob(f"*{feedback.conversation_id}*.json"))
@@ -258,7 +260,7 @@ def submit_feedback(feedback: MessageFeedback):
 @app.get("/api/feedback/{conversation_id}")
 def get_feedback(conversation_id: str):
     '''Endpoint to retrieve saved feedback for a conversation.'''
-    from local_logging import DEFAULT_LOGGING_DIR
+    from pipeline.local_logging import DEFAULT_LOGGING_DIR
 
     matching_files = list(DEFAULT_LOGGING_DIR.rglob(f"*{conversation_id}*.json"))
     if not matching_files:
@@ -386,7 +388,11 @@ def generate_response_endpoint(question: str, shakespeare_style: bool = False):
         apply_shakespeare_style=shakespeare_style,
     )
     
-    return {"response": response_text}
+    return {
+        "response": response_text,
+        "conversation_id": get_conversation_id(),  #ya got me
+        "message_index": get_message_index(),
+    }
 
 
 @app.get("/api/refresh_chat")

@@ -12,8 +12,10 @@ from pipeline.feedback_store import load_feedback
 
 
 def iter_log_files(logging_dir: Path = DEFAULT_LOGGING_DIR):
-    """Yield every .json log file found under the logging directory."""
     for path in sorted(logging_dir.rglob("*.json")):
+        # Skip any file that has .feedback in the name
+        if ".feedback" in path.name:
+            continue
         yield path
 
 
