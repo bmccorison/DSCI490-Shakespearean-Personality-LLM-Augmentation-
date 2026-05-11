@@ -36,7 +36,7 @@ from pipeline.multimodel import (
     validate_max_turns as validate_multimodel_max_turns,
 )
 
-# from pipeline.rag import get_context  # TODO Implement
+from pipeline.rag import get_context
 
 BARK_HISTORY_PROMPT = os.getenv("BARK_HISTORY_PROMPT", "v2/en_speaker_6")
 BARK_CHARACTER_PROMPTS = {
@@ -415,8 +415,7 @@ def generate_response_endpoint(question: str, shakespeare_style: bool = False):
     if not selected_chat_model_name or not selected_chat_adapter_path:
         raise HTTPException(status_code=400, detail="Model is not loaded. Call /api/select_model first.")
 
-    # TODO: wire in RAG once vector store/context plumbing is implemented.
-    rag_context = None
+    rag_context = get_context(question)
 
     try:
         active_model, active_tokenizer = _ensure_loaded_model(
