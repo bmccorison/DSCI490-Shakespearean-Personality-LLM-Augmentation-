@@ -93,8 +93,8 @@ class MultiModelParticipantRequest(BaseModel):
     '''Request payload for one model-to-model speaker.'''
 
     name: str
-    character: str
-    work: str
+    character: str | None = None
+    work: str | None = None
     model_name: str
     adapter_path: str
 
@@ -580,6 +580,42 @@ def _empty_multimodel_session() -> dict[str, object]:
     }
 
 
+def _resolve_multimodel_persona(
+    model_name: str,
+    adapter_path: str,
+) -> tuple[str, str]:
+    '''Resolve a multimodel participant's character/work from published model config.'''
+    selected_model = next(
+        (model for model in model_selection() if model["name"] == model_name),
+        None,
+    )
+    if selected_model is None:
+        raise ValueError(f"Model is not available: {model_name}")
+
+    selected_adapter = next(
+        (
+            adapter
+            for adapter in selected_model["adapters"]
+            if adapter["path"] == adapter_path
+        ),
+        None,
+    )
+    if selected_adapter is None:
+        raise ValueError(f"Adapter is not available for {model_name}: {adapter_path}")
+
+    character = str(
+        selected_adapter.get("character") or selected_model.get("character") or ""
+    ).strip()
+    work = str(
+        selected_adapter.get("work") or selected_model.get("work") or ""
+    ).strip()
+    if not character or not work:
+        raise ValueError(
+            f"Character metadata is missing for {model_name} with {adapter_path}."
+        )
+    return character, work
+
+
 @app.get("/api/multimodel/config")
 def get_multimodel_config():
     '''Return defaults and hard limits for model-to-model conversations.'''
@@ -610,16 +646,21 @@ def start_multimodel_conversation(payload: MultiModelStartRequest):
     global active_multimodel_conversation
 
     try:
-        participants = [
-            MultiModelParticipant(
-                name=participant.name,
-                character=participant.character,
-                work=participant.work,
-                model_name=participant.model_name,
-                adapter_path=participant.adapter_path,
+        participants = []
+        for participant in payload.participants:
+            character, work = _resolve_multimodel_persona(
+                participant.model_name,
+                participant.adapter_path,
             )
-            for participant in payload.participants
-        ]
+            participants.append(
+                MultiModelParticipant(
+                    name=participant.name,
+                    character=character,
+                    work=work,
+                    model_name=participant.model_name,
+                    adapter_path=participant.adapter_path,
+                )
+            )
         max_turns = (
             multimodel_default_max_turns
             if payload.max_turns is None

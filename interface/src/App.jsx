@@ -4,52 +4,24 @@ const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 const DEFAULT_WORK = "Hamlet";
 const STARTUP_RETRY_ATTEMPTS = 20;
 const STARTUP_RETRY_DELAY_MS = 1000;
-// TODO: Replace this static list with backend-provided character options.
+// Fallback while backend model metadata is loading.
 const CHARACTER_OPTIONS = ["Hamlet"];
-const MULTIMODEL_CHARACTER_DEFAULTS = [
-  "Hamlet",
-  "Ophelia",
-  "Macbeth",
-  "Lady Macbeth",
-];
 const MULTIMODEL_MIN_SPEAKERS = 2;
 const MULTIMODEL_MAX_SPEAKERS = 4;
 const MULTIMODEL_DEFAULT_MAX_TURNS = 12;
 const MULTIMODEL_HARD_MAX_TURNS = 20;
 
-function RobotIcon({ className = "h-5 w-5" }) {
+function MessageAvatar({ type = "assistant" }) {
+  const isUser = type === "user";
   return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-hidden="true"
-    >
-      <rect
-        x="4"
-        y="7"
-        width="16"
-        height="12"
-        rx="3"
-        stroke="currentColor"
-        strokeWidth="1.7"
+    <div className="message-icon message-avatar mt-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
+      <img
+        src={isUser ? "/quill.svg" : "/crown.svg"}
+        alt=""
+        className={`${isUser ? "h-5 w-5" : "h-6 w-6"} object-contain`}
+        aria-hidden="true"
       />
-      <path
-        d="M12 3v3"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-      />
-      <circle cx="9" cy="12" r="1.2" fill="currentColor" />
-      <circle cx="15" cy="12" r="1.2" fill="currentColor" />
-      <path
-        d="M9 16h6"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-      />
-    </svg>
+    </div>
   );
 }
 
@@ -152,6 +124,13 @@ function parseAssistantReply(payload) {
   return "The stage is silent.";
 }
 
+function normalizeText(value, fallback = "") {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+  return fallback;
+}
+
 function normalizeModels(payload) {
   if (!Array.isArray(payload)) return [];
 
@@ -161,6 +140,8 @@ function normalizeModels(payload) {
         return null;
       }
 
+      const modelCharacter = normalizeText(model.character, CHARACTER_OPTIONS[0]);
+      const modelWork = normalizeText(model.work, DEFAULT_WORK);
       const nextAdapters = Array.isArray(model.adapters)
         ? model.adapters
         : Array.isArray(model.adapter_paths)
@@ -185,22 +166,37 @@ function normalizeModels(payload) {
                   typeof adapter.description === "string"
                     ? adapter.description
                     : "",
+                character: normalizeText(adapter.character, modelCharacter),
+                work: normalizeText(adapter.work, modelWork),
               };
             })
           : [];
 
-      const adapters = nextAdapters.filter(
-        (adapter) =>
-          adapter &&
-          typeof adapter.name === "string" &&
-          typeof adapter.path === "string" &&
-          adapter.path.length > 0,
-      );
+      const adapters = nextAdapters
+        .filter(
+          (adapter) =>
+            adapter &&
+            typeof adapter.name === "string" &&
+            typeof adapter.path === "string" &&
+            adapter.path.length > 0,
+        )
+        .map((adapter) => ({
+          name: adapter.name,
+          path: adapter.path,
+          description:
+            typeof adapter.description === "string"
+              ? adapter.description
+              : "",
+          character: normalizeText(adapter.character, modelCharacter),
+          work: normalizeText(adapter.work, modelWork),
+        }));
 
       return {
         name: model.name,
         description:
           typeof model.description === "string" ? model.description : "",
+        character: modelCharacter,
+        work: modelWork,
         defaultAdapterPath:
           typeof model.default_adapter_path === "string"
             ? model.default_adapter_path
@@ -222,15 +218,66 @@ function resolveDefaultAdapterPath(model) {
   return preferredAdapter?.path || model.adapters[0].path;
 }
 
+function resolveAdapterDetails(model, adapterPath) {
+  return (
+    model?.adapters?.find((adapter) => adapter.path === adapterPath) ?? null
+  );
+}
+
+function resolveParticipantContext(model, adapterPath) {
+  const adapter = resolveAdapterDetails(model, adapterPath);
+  const modelCharacter = normalizeText(model?.character, CHARACTER_OPTIONS[0]);
+  const modelWork = normalizeText(model?.work, DEFAULT_WORK);
+  return {
+    character: normalizeText(adapter?.character, modelCharacter),
+    work: normalizeText(adapter?.work, modelWork),
+  };
+}
+
+function buildModelProfiles(modelList = []) {
+  return modelList.flatMap((model) =>
+    (model.adapters ?? []).map((adapter) => {
+      const context = resolveParticipantContext(model, adapter.path);
+      return {
+        modelName: model.name,
+        adapterPath: adapter.path,
+        character: context.character,
+        work: context.work,
+      };
+    }),
+  );
+}
+
+function buildCharacterOptions(modelList = []) {
+  const characterSet = new Set();
+  buildModelProfiles(modelList).forEach((profile) => {
+    if (profile.character) {
+      characterSet.add(profile.character);
+    }
+  });
+  return characterSet.size > 0 ? Array.from(characterSet) : CHARACTER_OPTIONS;
+}
+
+function findProfileForCharacter(modelList = [], characterName = "") {
+  const targetCharacter = normalizeText(characterName).toLowerCase();
+  if (!targetCharacter) return null;
+
+  return (
+    buildModelProfiles(modelList).find(
+      (profile) => profile.character.toLowerCase() === targetCharacter,
+    ) ?? null
+  );
+}
+
 function createMultiModelParticipant(index, modelList = []) {
-  const defaultModel = modelList[0] ?? null;
+  const modelProfiles = buildModelProfiles(modelList);
+  const defaultProfile = modelProfiles[index % modelProfiles.length] ?? null;
   return {
     name: `Speaker ${index + 1}`,
-    character:
-      MULTIMODEL_CHARACTER_DEFAULTS[index] || `Character ${index + 1}`,
-    work: DEFAULT_WORK,
-    model_name: defaultModel?.name || "",
-    adapter_path: resolveDefaultAdapterPath(defaultModel),
+    character: defaultProfile?.character || CHARACTER_OPTIONS[0],
+    work: defaultProfile?.work || DEFAULT_WORK,
+    model_name: defaultProfile?.modelName || "",
+    adapter_path: defaultProfile?.adapterPath || "",
   };
 }
 
@@ -374,6 +421,10 @@ export default function App() {
       null,
     [adapterOptions, selectedAdapter],
   );
+  const availableCharacterOptions = useMemo(
+    () => buildCharacterOptions(models),
+    [models],
+  );
   const visibleMultiParticipants = useMemo(
     () => multiParticipants.slice(0, multiSpeakerCount),
     [multiParticipants, multiSpeakerCount],
@@ -394,22 +445,40 @@ export default function App() {
       return;
     }
 
+    const defaultProfiles = buildModelProfiles(models);
     setMultiParticipants((previous) =>
       previous.map((participant, index) => {
+        const defaultProfile =
+          defaultProfiles[index % defaultProfiles.length] ?? null;
         const currentModel = models.find(
           (model) => model.name === participant.model_name,
         );
-        const modelDetailsForParticipant = currentModel ?? models[0];
+        const defaultProfileModel = models.find(
+          (model) => model.name === defaultProfile?.modelName,
+        );
+        const modelDetailsForParticipant =
+          currentModel ?? defaultProfileModel ?? models[0];
         const adapterStillValid = modelDetailsForParticipant.adapters.some(
           (adapter) => adapter.path === participant.adapter_path,
+        );
+        const fallbackAdapterPath =
+          !currentModel && defaultProfile?.adapterPath
+            ? defaultProfile.adapterPath
+            : resolveDefaultAdapterPath(modelDetailsForParticipant);
+        const adapterPath = adapterStillValid
+          ? participant.adapter_path
+          : fallbackAdapterPath;
+        const participantContext = resolveParticipantContext(
+          modelDetailsForParticipant,
+          adapterPath,
         );
 
         return {
           ...participant,
           model_name: modelDetailsForParticipant.name,
-          adapter_path: adapterStillValid
-            ? participant.adapter_path
-            : resolveDefaultAdapterPath(modelDetailsForParticipant),
+          adapter_path: adapterPath,
+          character: participantContext.character,
+          work: participantContext.work,
           name: participant.name || `Speaker ${index + 1}`,
         };
       }),
@@ -750,9 +819,50 @@ export default function App() {
 
   const handleMultiModelChange = (index, nextModelName) => {
     const nextModelDetails = models.find((model) => model.name === nextModelName);
+    const nextAdapterPath = resolveDefaultAdapterPath(nextModelDetails);
+    const participantContext = resolveParticipantContext(
+      nextModelDetails,
+      nextAdapterPath,
+    );
     updateMultiParticipant(index, {
       model_name: nextModelName,
-      adapter_path: resolveDefaultAdapterPath(nextModelDetails),
+      adapter_path: nextAdapterPath,
+      character: participantContext.character,
+      work: participantContext.work,
+    });
+  };
+
+  const handleMultiAdapterChange = (index, nextAdapterPath) => {
+    const participant = multiParticipants[index];
+    const participantModel = models.find(
+      (model) => model.name === participant?.model_name,
+    );
+    const participantContext = resolveParticipantContext(
+      participantModel,
+      nextAdapterPath,
+    );
+    updateMultiParticipant(index, {
+      adapter_path: nextAdapterPath,
+      character: participantContext.character,
+      work: participantContext.work,
+    });
+  };
+
+  const handleMultiCharacterChange = (index, nextCharacter) => {
+    const matchedProfile = findProfileForCharacter(models, nextCharacter);
+    if (!matchedProfile) {
+      updateMultiParticipant(index, {
+        character: nextCharacter,
+        work: DEFAULT_WORK,
+      });
+      return;
+    }
+
+    updateMultiParticipant(index, {
+      character: matchedProfile.character,
+      work: matchedProfile.work,
+      model_name: matchedProfile.modelName,
+      adapter_path: matchedProfile.adapterPath,
     });
   };
 
@@ -1253,7 +1363,7 @@ export default function App() {
                     }
                     disabled={isMultiRunning}
                   >
-                    {CHARACTER_OPTIONS.map((name) => (
+                    {availableCharacterOptions.map((name) => (
                       <option key={name} value={name}>
                         {name}
                       </option>
@@ -1331,18 +1441,9 @@ export default function App() {
                       : "mr-auto"
                   }`}
                 >
-                  <div className="message-icon message-avatar mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
-                    {message.role === "user" ? (
-                      <img
-                        src="/quill.svg"
-                        alt=""
-                        className="h-5 w-5"
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <RobotIcon className="h-5 w-5" />
-                    )}
-                  </div>
+                  <MessageAvatar
+                    type={message.role === "user" ? "user" : "assistant"}
+                  />
 
                   <article
                     className={`chat-bubble max-w-[92%] rounded-xl border px-4 py-3 ${
@@ -1505,9 +1606,7 @@ export default function App() {
 
               {isSending && (
                 <div className="message-row mb-3 flex max-w-[96%] items-start gap-2">
-                  <div className="message-icon message-avatar mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
-                    <img src="/crown.svg" className="h-5 w-5" alt="" />
-                  </div>
+                  <MessageAvatar />
 
                   <article className="typing-indicator chat-bubble assistant-bubble max-w-[92%] rounded-xl border border-gold bg-white px-4 py-3 text-maroon">
                     <div className="flex items-center gap-3">
@@ -1711,61 +1810,26 @@ export default function App() {
                   (model) => model.name === participant.model_name,
                 );
                 const participantAdapters = participantModel?.adapters ?? [];
+                const participantAdapterDetails =
+                  participantAdapters.find(
+                    (adapter) => adapter.path === participant.adapter_path,
+                  ) ?? null;
 
                 return (
                   <article
                     key={`${index}-${participant.name}`}
-                    className="settings-panel rounded-xl border border-maroon/20 bg-parchment p-3"
+                    className="settings-panel rounded-2xl border border-maroon/25 bg-white p-4"
                   >
-                    <div className="grid gap-2 sm:grid-cols-3">
-                      <label className="block">
-                        <span className="text-sm font-medium text-maroon">
-                          Speaker
-                        </span>
-                        <input
-                          className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
-                          value={participant.name}
-                          onChange={(event) =>
-                            updateMultiParticipant(index, {
-                              name: event.target.value,
-                            })
-                          }
-                          disabled={isMultiRunning}
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="text-sm font-medium text-maroon">
-                          Character
-                        </span>
-                        <input
-                          className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
-                          value={participant.character}
-                          onChange={(event) =>
-                            updateMultiParticipant(index, {
-                              character: event.target.value,
-                            })
-                          }
-                          disabled={isMultiRunning}
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="text-sm font-medium text-maroon">
-                          Work
-                        </span>
-                        <input
-                          className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
-                          value={participant.work}
-                          onChange={(event) =>
-                            updateMultiParticipant(index, {
-                              work: event.target.value,
-                            })
-                          }
-                          disabled={isMultiRunning}
-                        />
-                      </label>
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <h3 className="text-base font-semibold text-maroon">
+                        {participant.name || `Speaker ${index + 1}`}
+                      </h3>
+                      <span className="rounded-md border border-gold bg-parchment px-2 py-1 text-xs font-semibold text-maroon/70">
+                        Speaker {index + 1}
+                      </span>
                     </div>
 
-                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <div className="grid gap-3 md:grid-cols-2">
                       <label className="block">
                         <span className="text-sm font-medium text-maroon">
                           Model
@@ -1787,7 +1851,12 @@ export default function App() {
                             <option>No models available</option>
                           )}
                         </select>
+                        <p className="mt-1 min-h-10 text-sm text-maroon/75">
+                          {participantModel?.description ||
+                            "No model description available."}
+                        </p>
                       </label>
+
                       <label className="block">
                         <span className="text-sm font-medium text-maroon">
                           Adapter
@@ -1796,9 +1865,7 @@ export default function App() {
                           className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
                           value={participant.adapter_path}
                           onChange={(event) =>
-                            updateMultiParticipant(index, {
-                              adapter_path: event.target.value,
-                            })
+                            handleMultiAdapterChange(index, event.target.value)
                           }
                           disabled={
                             isMultiRunning || participantAdapters.length === 0
@@ -1813,7 +1880,52 @@ export default function App() {
                             <option>No adapter</option>
                           )}
                         </select>
+                        <p className="mt-1 min-h-10 text-sm text-maroon/75">
+                          {participantAdapterDetails?.description ||
+                            "No adapter description available."}
+                        </p>
                       </label>
+                    </div>
+
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      <label className="block">
+                        <span className="text-sm font-medium text-maroon">
+                          Speaker
+                        </span>
+                        <input
+                          className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                          value={participant.name}
+                          onChange={(event) =>
+                            updateMultiParticipant(index, {
+                              name: event.target.value,
+                            })
+                          }
+                          disabled={isMultiRunning}
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-sm font-medium text-maroon">
+                          Character
+                        </span>
+                        <select
+                          className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                          value={participant.character}
+                          onChange={(event) =>
+                            handleMultiCharacterChange(index, event.target.value)
+                          }
+                          disabled={isMultiRunning}
+                        >
+                          {availableCharacterOptions.map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="mt-3 rounded-lg border border-gold/60 bg-parchment px-3 py-2 text-sm text-maroon/75">
+                      Work: {participant.work || DEFAULT_WORK}
                     </div>
                   </article>
                 );
@@ -1836,14 +1948,7 @@ export default function App() {
 
             {multiConversationPrompt && (
               <div className="message-row mb-3 ml-auto flex max-w-[96%] flex-row-reverse items-start justify-end gap-2">
-                <div className="message-icon message-avatar mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
-                  <img
-                    src="/quill.svg"
-                    alt=""
-                    className="h-5 w-5"
-                    aria-hidden="true"
-                  />
-                </div>
+                <MessageAvatar type="user" />
                 <article className="chat-bubble user-bubble max-w-[92%] rounded-xl border border-maroon bg-maroon px-4 py-3 text-white">
                   <p className="whitespace-pre-wrap text-lg leading-relaxed">
                     {multiConversationPrompt}
@@ -1863,30 +1968,14 @@ export default function App() {
                       : "mr-auto"
                   }`}
                 >
-                  <div className="message-icon message-avatar mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
-                    <RobotIcon className="h-5 w-5" />
-                  </div>
+                  <MessageAvatar />
 
-                  <article
-                    className={`chat-bubble max-w-[92%] rounded-xl border px-4 py-3 ${
-                      alignRight
-                        ? "user-bubble border-maroon bg-maroon text-white"
-                        : "assistant-bubble border-gold bg-white text-maroon"
-                    }`}
-                  >
+                  <article className="chat-bubble assistant-bubble max-w-[92%] rounded-xl border border-gold bg-white px-4 py-3 text-maroon">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p
-                        className={`text-sm font-semibold ${
-                          alignRight ? "text-white/80" : "text-maroon/75"
-                        }`}
-                      >
+                      <p className="text-sm font-semibold text-maroon/75">
                         {turn.speaker_name} as {turn.character}
                       </p>
-                      <span
-                        className={`text-xs ${
-                          alignRight ? "text-white/70" : "text-maroon/60"
-                        }`}
-                      >
+                      <span className="text-xs text-maroon/60">
                         Turn {turn.turn_number}
                       </span>
                     </div>
@@ -1900,9 +1989,7 @@ export default function App() {
 
             {isMultiRunning && (
               <div className="message-row mb-3 flex max-w-[96%] items-start gap-2">
-                <div className="message-icon message-avatar mt-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gold bg-white text-maroon">
-                  <RobotIcon className="h-5 w-5" />
-                </div>
+                <MessageAvatar />
 
                 <article className="typing-indicator chat-bubble assistant-bubble max-w-[92%] rounded-xl border border-gold bg-white px-4 py-3 text-maroon">
                   <div className="flex items-center gap-3">
