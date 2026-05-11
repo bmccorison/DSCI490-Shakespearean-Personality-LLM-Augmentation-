@@ -59,7 +59,7 @@ async function apiGet(path, params) {
     `${API_BASE}${path}${queryString ? `?${queryString}` : ""}`,
     {
       method: "GET",
-    }
+    },
   );
   if (!response.ok) {
     throw new Error(await getErrorMessage(response, path));
@@ -78,12 +78,24 @@ async function apiPostBlob(path, params) {
     `${API_BASE}${path}${queryString ? `?${queryString}` : ""}`,
     {
       method: "POST",
-    }
+    },
   );
   if (!response.ok) {
     throw new Error(await getErrorMessage(response, path));
   }
   return response.blob();
+}
+
+async function apiPostJson(path, body) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, path));
+  }
+  return response.json();
 }
 
 async function getErrorMessage(response, path) {
@@ -141,7 +153,8 @@ function normalizeModels(payload) {
               }
 
               const pair = Object.entries(adapter).find(
-                ([key, value]) => key !== "description" && typeof value === "string"
+                ([key, value]) =>
+                  key !== "description" && typeof value === "string",
               );
               if (!pair) {
                 return null;
@@ -152,7 +165,9 @@ function normalizeModels(payload) {
                 name,
                 path,
                 description:
-                  typeof adapter.description === "string" ? adapter.description : "",
+                  typeof adapter.description === "string"
+                    ? adapter.description
+                    : "",
               };
             })
           : [];
@@ -162,7 +177,7 @@ function normalizeModels(payload) {
           adapter &&
           typeof adapter.name === "string" &&
           typeof adapter.path === "string" &&
-          adapter.path.length > 0
+          adapter.path.length > 0,
       );
 
       return {
@@ -185,7 +200,7 @@ function resolveDefaultAdapterPath(model) {
   }
 
   const preferredAdapter = model.adapters.find(
-    (adapter) => adapter.path === model.defaultAdapterPath
+    (adapter) => adapter.path === model.defaultAdapterPath,
   );
   return preferredAdapter?.path || model.adapters[0].path;
 }
@@ -209,7 +224,7 @@ function isRetryableStartupError(error) {
   return (
     message.length === 0 ||
     /ECONNREFUSED|Failed to fetch|NetworkError|http proxy error|failed \(500\)|failed \(502\)|failed \(503\)|failed \(504\)/i.test(
-      message
+      message,
     )
   );
 }
@@ -257,24 +272,78 @@ export default function App() {
   const [speakingId, setSpeakingId] = useState(null);
   const [isAudioLoading, setIsAudioLoading] = useState(false);
   const [isAudioPaused, setIsAudioPaused] = useState(false);
-  const [isShakespeareStyleEnabled, setIsShakespeareStyleEnabled] = useState(false);
+  const [isShakespeareStyleEnabled, setIsShakespeareStyleEnabled] =
+    useState(false);
   const [activityLog, setActivityLog] = useState([]);
   const bottomRef = useRef(null);
   const activeAudioRef = useRef(null);
   const activeAudioUrlRef = useRef("");
   const pendingModelApplyCountRef = useRef(0);
+  const [feedbackOpen, setFeedbackOpen] = useState(null); // holds message.id
+  const [spans, setSpans] = useState({}); // messageId -> span list
+  const [votes, setVotes] = useState({}); // messageId -> "up"|"down"
+  const [submittedFeedback, setSubmittedFeedback] = useState(new Set());
+  const [pendingSpan, setPendingSpan] = useState(null);
+  const [spanMenuPos, setSpanMenuPos] = useState({ x: 0, y: 0 });
+
+  const handleTextSelect = (messageId) => {
+    const selected = window.getSelection()?.toString().trim();
+    if (!selected) return;
+    const range = window.getSelection().getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+    setPendingSpan({ text: selected, messageId });
+    setSpanMenuPos({
+      x: rect.left,
+      y: rect.top + window.scrollY - 45  // appear above selection instead
+    });
+  };
+
+  const assignPolarity = (polarity) => {
+    if (!pendingSpan) return;
+    setSpans((prev) => ({
+      ...prev,
+      [pendingSpan.messageId]: [
+        ...(prev[pendingSpan.messageId] ?? []),
+        { text: pendingSpan.text, polarity },
+      ],
+    }));
+    setPendingSpan(null);
+    window.getSelection()?.removeAllRanges();
+  };
+
+  const handleVote = (messageId, vote) => {
+    setVotes((prev) => ({ ...prev, [messageId]: vote }));
+  };
+
+  const handleFeedbackSubmit = async (message) => {
+    try {
+      await apiPostJson("/feedback", {
+        conversation_id: message.conversationId,
+        message_index: message.messageIndex,
+        vote: votes[message.id] ?? "neutral",
+        spans: spans[message.id] ?? [],
+      });
+      setSubmittedFeedback((prev) => new Set([...prev, message.id]));
+      setFeedbackOpen(null);
+      updateStatus("Feedback submitted.", "feedback");
+    } catch (feedbackError) {
+      reportError(feedbackError.message, "Feedback submission failed.");
+    }
+  };
 
   const modelDetails = useMemo(
     () => models.find((model) => model.name === selectedModel),
-    [models, selectedModel]
+    [models, selectedModel],
   );
   const adapterOptions = useMemo(
     () => modelDetails?.adapters ?? [],
-    [modelDetails]
+    [modelDetails],
   );
   const selectedAdapterDetails = useMemo(
-    () => adapterOptions.find((adapter) => adapter.path === selectedAdapter) ?? null,
-    [adapterOptions, selectedAdapter]
+    () =>
+      adapterOptions.find((adapter) => adapter.path === selectedAdapter) ??
+      null,
+    [adapterOptions, selectedAdapter],
   );
 
   useEffect(() => {
@@ -355,7 +424,7 @@ export default function App() {
       });
       recordActivity(
         "refresh",
-        `Refresh fallback used after /refresh_chat failed: ${refreshError.message}`
+        `Refresh fallback used after /refresh_chat failed: ${refreshError.message}`,
       );
     }
     setMessages([]);
@@ -391,7 +460,10 @@ export default function App() {
     return modelList;
   };
 
-  const applyCharacter = async (nextCharacter = character, showStatus = true) => {
+  const applyCharacter = async (
+    nextCharacter = character,
+    showStatus = true,
+  ) => {
     setError("");
     releaseActiveAudio();
     clearPlaybackState();
@@ -408,7 +480,7 @@ export default function App() {
   const applyModel = async (
     nextModel = selectedModel,
     nextAdapter = selectedAdapter,
-    showStatus = true
+    showStatus = true,
   ) => {
     setError("");
     if (!nextModel || !nextAdapter) {
@@ -417,7 +489,7 @@ export default function App() {
 
     const activeModel = models.find((model) => model.name === nextModel);
     const activeAdapter = activeModel?.adapters.find(
-      (adapter) => adapter.path === nextAdapter
+      (adapter) => adapter.path === nextAdapter,
     );
 
     pendingModelApplyCountRef.current += 1;
@@ -432,13 +504,13 @@ export default function App() {
           `Model selection submitted: ${nextModel} with ${
             activeAdapter?.name || nextAdapter
           }.`,
-          "model"
+          "model",
         );
       }
     } finally {
       pendingModelApplyCountRef.current = Math.max(
         0,
-        pendingModelApplyCountRef.current - 1
+        pendingModelApplyCountRef.current - 1,
       );
       if (pendingModelApplyCountRef.current === 0) {
         setIsApplyingModel(false);
@@ -457,21 +529,21 @@ export default function App() {
     }
 
     applyModel(nextModel, nextAdapter).catch((applyError) =>
-      reportError(applyError.message, "Model apply failed.")
+      reportError(applyError.message, "Model apply failed."),
     );
   };
 
   const handleAdapterChange = (nextAdapter) => {
     setSelectedAdapter(nextAdapter);
     applyModel(selectedModel, nextAdapter).catch((applyError) =>
-      reportError(applyError.message, "Model apply failed.")
+      reportError(applyError.message, "Model apply failed."),
     );
   };
 
   const handleCharacterChange = (nextCharacter) => {
     setCharacter(nextCharacter);
     applyCharacter(nextCharacter).catch((characterError) =>
-      reportError(characterError.message, "Character update failed.")
+      reportError(characterError.message, "Character update failed."),
     );
   };
 
@@ -482,7 +554,7 @@ export default function App() {
         nextValue
           ? "Shakespeare dialogue polish enabled."
           : "Shakespeare dialogue polish disabled.",
-        "style"
+        "style",
       );
       return nextValue;
     });
@@ -499,25 +571,28 @@ export default function App() {
           isCancelled: () => cancelled,
           onRetry: (nextAttempt) => {
             setStatus(
-              `Waiting for backend to start... retry ${nextAttempt}/${STARTUP_RETRY_ATTEMPTS}.`
+              `Waiting for backend to start... retry ${nextAttempt}/${STARTUP_RETRY_ATTEMPTS}.`,
             );
           },
         });
         if (cancelled) return;
         recordActivity("character", "Default character context applied.");
 
-        const loadedModels = await retryStartupAction(() => fetchModels(false), {
-          isCancelled: () => cancelled,
-          onRetry: (nextAttempt) => {
-            setStatus(
-              `Backend reached. Loading models... retry ${nextAttempt}/${STARTUP_RETRY_ATTEMPTS}.`
-            );
+        const loadedModels = await retryStartupAction(
+          () => fetchModels(false),
+          {
+            isCancelled: () => cancelled,
+            onRetry: (nextAttempt) => {
+              setStatus(
+                `Backend reached. Loading models... retry ${nextAttempt}/${STARTUP_RETRY_ATTEMPTS}.`,
+              );
+            },
           },
-        });
+        );
         if (cancelled) return;
         recordActivity(
           "models",
-          `Discovered ${loadedModels.length} loadable model option(s).`
+          `Discovered ${loadedModels.length} loadable model option(s).`,
         );
 
         const firstModel = loadedModels[0];
@@ -528,7 +603,7 @@ export default function App() {
           await applyModel(firstModel.name, firstAdapter, false);
           recordActivity(
             "model",
-            `Default model loaded: ${firstModel.name} using ${firstAdapter}.`
+            `Default model loaded: ${firstModel.name} using ${firstAdapter}.`,
           );
         }
 
@@ -537,7 +612,7 @@ export default function App() {
             firstModel?.name && firstAdapter
               ? "Thy chatbot is ready."
               : "No loadable models are currently available.",
-            "startup"
+            "startup",
           );
         }
       } catch (initError) {
@@ -578,17 +653,15 @@ export default function App() {
         shakespeare_style: isShakespeareStyleEnabled,
       });
       const answerText = parseAssistantReply(payload);
-      const confidence =
-        payload && typeof payload.confidence_score !== "undefined"
-          ? `\n\nConfidence: ${payload.confidence_score}`
-          : "";
 
       setMessages((previous) => [
         ...previous,
         {
           id: `assistant-${Date.now()}`,
           role: "assistant",
-          content: `${answerText}${confidence}`,
+          content: answerText,
+          conversationId: payload.conversation_id ?? "",
+          messageIndex: payload.message_index ?? 0,
         },
       ]);
       updateStatus("A reply hath arrived.", "reply");
@@ -669,7 +742,10 @@ export default function App() {
       </header>
 
       <section className="mt-6">
-        <details className="rounded-2xl border border-maroon/25 bg-white p-4" open>
+        <details
+          className="rounded-2xl border border-maroon/25 bg-white p-4"
+          open
+        >
           <summary className="cursor-pointer font-semibold text-maroon">
             Controls
           </summary>
@@ -759,7 +835,7 @@ export default function App() {
                 className="rounded-lg border border-maroon bg-white px-3 py-2 text-sm font-semibold text-maroon"
                 onClick={() =>
                   refreshServerChat().catch((refreshError) =>
-                    reportError(refreshError.message, "Chat reset failed.")
+                    reportError(refreshError.message, "Chat reset failed."),
                   )
                 }
                 type="button"
@@ -790,7 +866,8 @@ export default function App() {
               Activity Log
             </p>
             <span className="text-xs text-maroon/60">
-              {activityLog.length} recent event{activityLog.length === 1 ? "" : "s"}
+              {activityLog.length} recent event
+              {activityLog.length === 1 ? "" : "s"}
             </span>
           </div>
           <div className="mt-3 max-h-40 space-y-2 overflow-y-auto pr-1">
@@ -810,7 +887,9 @@ export default function App() {
               >
                 <div className="flex items-center justify-between gap-3">
                   <span className="font-semibold capitalize">{entry.kind}</span>
-                  <span className="text-xs text-maroon/60">{entry.timestamp}</span>
+                  <span className="text-xs text-maroon/60">
+                    {entry.timestamp}
+                  </span>
                 </div>
                 <p className="mt-1 leading-snug">{entry.detail}</p>
               </div>
@@ -856,11 +935,23 @@ export default function App() {
                     : "border-gold bg-white text-maroon"
                 }`}
               >
-                <p className="whitespace-pre-wrap text-lg leading-relaxed">
+                <p
+                  className="whitespace-pre-wrap text-lg leading-relaxed"
+                  onMouseUp={
+                    message.role === "assistant"
+                      ? () => handleTextSelect(message.id)
+                      : undefined
+                  }
+                  style={{
+                    userSelect: message.role === "assistant" ? "text" : "auto",
+                  }}
+                >
                   {message.content}
                 </p>
+
                 {message.role === "assistant" && (
                   <div className="mt-2 flex flex-wrap gap-2">
+                    {/* Existing voice buttons */}
                     <button
                       className="rounded-md border border-maroon px-2 py-1 text-sm font-medium text-maroon hover:bg-gold disabled:cursor-not-allowed disabled:opacity-60"
                       onClick={() => handleSpeak(message.id, message.content)}
@@ -881,6 +972,114 @@ export default function App() {
                       >
                         {isAudioPaused ? "Resume Voice" : "Pause Voice"}
                       </button>
+                    )}
+
+                    {/* New feedback button */}
+                    {!submittedFeedback.has(message.id) ? (
+                      <button
+                        className="rounded-md border border-maroon px-2 py-1 text-sm font-medium text-maroon hover:bg-gold"
+                        onClick={() =>
+                          setFeedbackOpen(
+                            feedbackOpen === message.id ? null : message.id,
+                          )
+                        }
+                        type="button"
+                      >
+                        Rate Response
+                      </button>
+                    ) : (
+                      <span className="px-2 py-1 text-sm text-maroon/60">
+                        ✓ Feedback submitted
+                      </span>
+                    )}
+
+                    {/* Feedback panel */}
+                    {feedbackOpen === message.id && (
+                      <div className="mt-2 w-full rounded-xl border border-maroon/30 bg-parchment p-3">
+                        {/* Close button */}
+                        <div className="mb-2 flex justify-end">
+                          <button
+                            onClick={() => setFeedbackOpen(null)}
+                            className="text-xs text-maroon/60 hover:text-maroon"
+                            type="button"
+                          >
+                            ▲ Close
+                          </button>
+                        </div>
+
+                        {/* Span tags preview */}
+                        {(spans[message.id] ?? []).length > 0 && (
+                          <div className="mb-2 flex flex-wrap gap-1 text-sm">
+                            {(spans[message.id] ?? []).map((s, idx) => (
+                              <span
+                                key={idx}
+                                onClick={() =>
+                                  setSpans((prev) => ({
+                                    ...prev,
+                                    [message.id]: prev[message.id].filter(
+                                      (_, i) => i !== idx,
+                                    ),
+                                  }))
+                                }
+                                className={`cursor-pointer rounded px-2 py-0.5 text-xs hover:opacity-60 ${
+                                  s.polarity === "good"
+                                    ? "bg-green-100 text-green-800"
+                                    : "bg-red-100 text-red-800"
+                                }`}
+                              >
+                                {s.polarity === "good" ? "✓" : "✗"} "{s.text}" ✕
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        <p className="mb-2 text-xs text-maroon/60">
+                          Highlight text above then mark it good or bad. Also
+                          upvote or downvote the full response.
+                        </p>
+
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            className={`rounded-md border px-3 py-1 text-sm font-medium ${
+                              votes[message.id] === "up"
+                                ? "border-green-600 bg-green-100 text-green-800"
+                                : "border-maroon text-maroon hover:bg-gold"
+                            }`}
+                            onClick={() =>
+                              handleVote(
+                                message.id,
+                                votes[message.id] === "up" ? null : "up",
+                              )
+                            }
+                            type="button"
+                          >
+                            ▲ Upvote
+                          </button>
+                          <button
+                            className={`rounded-md border px-3 py-1 text-sm font-medium ${
+                              votes[message.id] === "down"
+                                ? "border-red-600 bg-red-100 text-red-800"
+                                : "border-maroon text-maroon hover:bg-gold"
+                            }`}
+                            onClick={() =>
+                              handleVote(
+                                message.id,
+                                votes[message.id] === "down" ? null : "down",
+                              )
+                            }
+                            type="button"
+                          >
+                            ▼ Downvote
+                          </button>
+                          <button
+                            className="rounded-md border border-maroon bg-maroon px-3 py-1 text-sm font-medium text-white hover:bg-maroon/80"
+                            onClick={() => handleFeedbackSubmit(message)}
+                            type="button"
+                          >
+                            Submit
+                          </button>
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}
@@ -908,7 +1107,40 @@ export default function App() {
               </article>
             </div>
           )}
-
+          {pendingSpan && (
+            <div
+              style={{
+                position: "fixed",
+                top: spanMenuPos.y,
+                left: spanMenuPos.x,
+                zIndex: 4000,
+              }}
+              className="flex gap-1 rounded-xl border border-maroon bg-white p-1 shadow-lg"
+            >
+              <button
+                className="rounded-md bg-green-100 px-3 py-1 text-sm font-medium text-green-800 hover:bg-green-200"
+                onClick={() => assignPolarity("good")}
+                type="button"
+              >
+                👍 Good
+              </button>
+              <button
+                className="rounded-md bg-red-100 px-3 py-1 text-sm font-medium text-red-800 hover:bg-red-200"
+                onClick={() => assignPolarity("bad")}
+                type="button"
+              >
+                👎 Bad
+              </button>
+              <button
+                className="rounded-md bg-gray-100 px-3 py-1 text-sm text-maroon hover:bg-gray-200"
+                onClick={() => setPendingSpan(null)}
+                type="button"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+          <div ref={bottomRef} />
           <div ref={bottomRef} />
         </div>
 
@@ -948,9 +1180,7 @@ export default function App() {
       </section>
 
       <footer className="mt-3 min-h-6 text-sm text-maroon/70">
-        <p>
-          Latest event: {activityLog[0]?.detail || status}
-        </p>
+        <p>Latest event: {activityLog[0]?.detail || status}</p>
       </footer>
     </div>
   );

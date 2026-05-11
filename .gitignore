@@ -3,6 +3,7 @@
 interface/node_modules
 interface/dist
 *.codex
+**AGENTS.md
 tests/
 **__pycache__/
-*.pyc
+**.pyc
