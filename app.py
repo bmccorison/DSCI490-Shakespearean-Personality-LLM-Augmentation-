@@ -12,22 +12,22 @@ import threading
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import scipy.io.wavfile as wav
 import uvicorn
-from pydantic import BaseModel
-from pipeline.feedback_store import save_feedback, load_feedback
+
+from pipeline.feedback_store import load_feedback, save_feedback
 
 from pipeline.lm_generation import (
     BASE_MODEL_ADAPTER_PATH,
     attach_named_adapter,
     generate_output,
+    get_conversation_id,
+    get_message_index,
     load_base_model_and_tokenizer,
     model_selection,
     refresh_chat_history,
     set_character_context,
-    get_conversation_id,
-    get_message_index,     # bruh
     validate_and_resolve_adapter,
 )
 from pipeline.multimodel import (
@@ -301,7 +301,9 @@ def _resolve_character_espeak_voice(character: str) -> str:
 def _resolve_piper_model_path(character: str) -> Path | None:
     '''Resolve an optional Piper model path (character-specific override first).'''
     character_lookup_key = _character_key(character)
-    configured_path = os.getenv(f"PIPER_MODEL_PATH_{character_lookup_key}") or os.getenv("PIPER_MODEL_PATH")
+    configured_path = os.getenv(
+        f"PIPER_MODEL_PATH_{character_lookup_key}"
+    ) or os.getenv("PIPER_MODEL_PATH")
     if not configured_path:
         return None
 
@@ -310,23 +312,33 @@ def _resolve_piper_model_path(character: str) -> Path | None:
         return None
     return resolved_path
 
+
 class SpanFeedback(BaseModel):
+    '''Span-level feedback for highlighted response text.'''
+
     text: str
-    polarity: str  # "good" or "bad"
+    polarity: str
+
 
 class MessageFeedback(BaseModel):
+    '''Feedback payload for one generated assistant message.'''
+
     conversation_id: str
     message_index: int
-    vote: str        # "up" or "down"
-    spans: list[SpanFeedback] = []
+    vote: str
+    spans: list[SpanFeedback] = Field(default_factory=list)
+
 
 @app.post("/api/feedback")
 def submit_feedback(feedback: MessageFeedback):
     '''Endpoint to receive per-message votes and span highlights from the frontend.'''
     from pipeline.local_logging import DEFAULT_LOGGING_DIR
 
-    # Find the log file matching this conversation ID
-    matching_files = list(DEFAULT_LOGGING_DIR.rglob(f"*{feedback.conversation_id}*.json"))
+    conversation_id = feedback.conversation_id.strip()
+    if not conversation_id:
+        raise HTTPException(status_code=400, detail="Conversation ID is required.")
+
+    matching_files = list(DEFAULT_LOGGING_DIR.rglob(f"*{conversation_id}*.json"))
     if not matching_files:
         raise HTTPException(status_code=404, detail="Conversation log not found.")
 
@@ -355,11 +367,18 @@ def get_feedback(conversation_id: str):
     '''Endpoint to retrieve saved feedback for a conversation.'''
     from pipeline.local_logging import DEFAULT_LOGGING_DIR
 
-    matching_files = list(DEFAULT_LOGGING_DIR.rglob(f"*{conversation_id}*.json"))
+    normalized_conversation_id = conversation_id.strip()
+    if not normalized_conversation_id:
+        raise HTTPException(status_code=400, detail="Conversation ID is required.")
+
+    matching_files = list(
+        DEFAULT_LOGGING_DIR.rglob(f"*{normalized_conversation_id}*.json")
+    )
     if not matching_files:
         raise HTTPException(status_code=404, detail="Conversation log not found.")
 
     return {"feedback": load_feedback(matching_files[0])}
+
 
 def _generate_piper_tts_audio(text: str, character: str) -> bytes:
     '''Generate WAV audio with Piper when binary and voice model are available.'''
@@ -488,14 +507,12 @@ def generate_response_endpoint(question: str, shakespeare_style: bool = False):
         rag_context,
         apply_shakespeare_style=shakespeare_style,
     )
-    
+
     return {
         "response": response_text,
-        "conversation_id": get_conversation_id(),  #ya got me
+        "conversation_id": get_conversation_id(),
         "message_index": get_message_index(),
     }
-
-    return {"response": response_text}
 
 
 @app.get("/api/refresh_chat")
@@ -528,9 +545,6 @@ def select_model(model_name: str, adapter_path: str):
     normalized_model_name = model_name.strip()
     normalized_adapter_path = adapter_path.strip()
     try:
-        model, tokenizer = get_model(normalized_model_name, normalized_adapter_path)  # Load and cache model artifacts
-        loaded_model_name = normalized_model_name
-        loaded_adapter_path = normalized_adapter_path
         _ensure_loaded_model(normalized_model_name, normalized_adapter_path)
         selected_chat_model_name = normalized_model_name
         selected_chat_adapter_path = normalized_adapter_path

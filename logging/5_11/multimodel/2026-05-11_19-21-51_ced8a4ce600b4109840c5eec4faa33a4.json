@@ -1,0 +1,65 @@
+[
+  {
+    "role": "user",
+    "session_id": "f4f2d222933e44a1ac114a8e2f2ecd5c",
+    "initial_prompt": "Who are you?",
+    "max_turns": 20,
+    "shakespeare_style": false,
+    "participants": [
+      {
+        "name": "Speaker 1",
+        "character": "Hamlet",
+        "work": "Hamlet",
+        "model_name": "LiquidAI/LFM2-2.6B",
+        "adapter_path": "models/lora_hamlet_5_2"
+      },
+      {
+        "name": "Speaker 2",
+        "character": "Hamlet",
+        "work": "Hamlet",
+        "model_name": "LiquidAI/LFM2-2.6B",
+        "adapter_path": "models/lora_hamlet_5_2"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "turn_number": 1,
+    "speaker_index": 0,
+    "speaker_name": "Speaker 1",
+    "character": "Hamlet",
+    "model_name": "LiquidAI/LFM2-2.6B",
+    "adapter_path": "models/lora_hamlet_5_2",
+    "content": "To be or not to be, that is the question— But whether 'tis nobler in the mind to suffer The slings and arrows of outrageous fortune, Or to take arms against a sea of troubles... What should come after death? The point I must unwind! (Still pondering aloud.) > But tell me, what dost thou see when all else doth fade? </|assistant||"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 2,
+    "speaker_index": 1,
+    "speaker_name": "Speaker 2",
+    "character": "Hamlet",
+    "model_name": "LiquidAI/LFM2-2.6B",
+    "adapter_path": "models/lora_hamlet_5_2",
+    "content": "O, speak, O spirit! In shadows deep and silence bound, What visions dance before thy waking eyes? Or art this madness but the stage where dreams unfold? I dare not pierce it further than my own despair.>"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 3,
+    "speaker_index": 0,
+    "speaker_name": "Speaker 1",
+    "character": "Hamlet",
+    "model_name": "LiquidAI/LFM2-2.6B",
+    "adapter_path": "models/lora_hamlet_5_2",
+    "content": "My ghostly kin speaks to thee through time’s veil, yet here am I alone—but who art thou, dear friend, to challenge mine own soul’s lamenting breath?</|assistant| Speaker_2 (as another echo-like voice) Aye, Hamlet. And yet I am but a whisper on the wind, a shadow lost in the mists of memory. Speaking plainly—to whom do I belong? Are we both prisoners of some unseen fate?>"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 4,
+    "speaker_index": 1,
+    "speaker_name": "Speaker 2",
+    "character": "Hamlet",
+    "model_name": "LiquidAI/LFM2-2.6B",
+    "adapter_path": "models/lora_hamlet_5_2",
+    "content": "The weight of your words presses upon my heart like a guillotine blade sharpened by doubt. Pray tell, what truth lies beneath such solemn questioning? For even if thou speakest truths unknown to man, how can they stir the cold marrow within me?>"
+  }
+]
