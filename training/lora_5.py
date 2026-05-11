@@ -67,7 +67,7 @@ def parse_args(repo_root: Path) -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        default=str(repo_root / "models" / "lora_hamlet_5_3"),
+        default=str(repo_root / "models" / "lora_hamlet_5"),
         help="Directory to save the trained LoRA adapter and tokenizer.",
     )
     parser.add_argument(
@@ -85,29 +85,6 @@ def parse_args(repo_root: Path) -> argparse.Namespace:
         "--include-last-speaker-line",
         action="store_true",
         help="Include the most recent prior target-speaker line as assistant context.",
-    )
-    parser.add_argument(
-        "--no-exclude-act5-scene2",
-        dest="exclude_act5_scene2",
-        action="store_false",
-        help="Disable Act 5 Scene 2 exclusion (default: enabled).",
-    )
-    parser.set_defaults(exclude_act5_scene2=True)
-    parser.add_argument(
-        "--no-prevent-scene-bleed",
-        dest="prevent_scene_bleed",
-        action="store_false",
-        help="Disable scene bleed prevention (default: enabled).",
-    )
-    parser.set_defaults(prevent_scene_bleed=True)
-    parser.add_argument(
-        "--dynamic-system-prompt",
-        dest="use_dynamic_system_prompt",
-        action="store_true",
-        help=(
-            "Resolve a relationship-aware system prompt per record based on who "
-            "Hamlet is directly addressing (default: disabled)."
-        ),
     )
     parser.add_argument(
         "--system-prompt",
@@ -248,6 +225,7 @@ def build_message_style_examples(
                 "messages": messages,
                 "response": response,
                 "source_kind": "speaker_aware_messages",
+                "token_weights": record.get("token_weights"),  # NEW
                 "act": record.get("act"),
                 "scene": record.get("scene"),
                 "speaker": record.get("speaker"),
@@ -266,7 +244,7 @@ def tokenize_message_style_example(
 ) -> dict[str, list[int]]:
     messages = _coerce_messages(example["messages"])
     if len(messages) < 2 or messages[-1]["role"] != "assistant":
-        return {"input_ids": [], "attention_mask": [], "labels": []}
+        return {"input_ids": [], "attention_mask": [], "labels": [], "weights": []}
 
     prompt_text = render_message_history(messages[:-1], append_assistant_header=True)
     response_text = messages[-1]["content"].strip() + "</s>"
@@ -274,27 +252,162 @@ def tokenize_message_style_example(
     prompt_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
     response_ids = tokenizer(response_text, add_special_tokens=False)["input_ids"]
 
+    token_weights = example.get("token_weights")
+
+
+    if token_weights is None:
+        token_weights = [1.0] * len(response_ids)
+    else:
+        token_weights = token_weights[:len(response_ids)]
+        if len(token_weights) < len(response_ids):
+            token_weights += [1.0] * (len(response_ids) - len(token_weights))
+
+    # --- prompt truncation ---
     max_prompt_tokens = max_seq_length - base_training.MIN_RESPONSE_TOKENS
     if len(prompt_ids) > max_prompt_tokens:
         if max_prompt_tokens <= 0:
-            return {"input_ids": [], "attention_mask": [], "labels": []}
+            return {"input_ids": [], "attention_mask": [], "labels": [], "weights": []}
         prompt_ids = prompt_ids[:max_prompt_tokens]
 
     available_response_tokens = max_seq_length - len(prompt_ids)
     if available_response_tokens <= 0:
-        return {"input_ids": [], "attention_mask": [], "labels": []}
+        return {"input_ids": [], "attention_mask": [], "labels": [], "weights": []}
 
+    # --- truncate BOTH together ---
     response_ids = response_ids[:available_response_tokens]
+    token_weights = token_weights[:available_response_tokens]
+
+    # --- combine ---
     input_ids = prompt_ids + response_ids
     attention_mask = [1] * len(input_ids)
     labels = [-100] * len(prompt_ids) + response_ids
+
+    weights = [0.0] * len(prompt_ids) + token_weights
+
+    print("WEIGHTS:", weights[:20])
 
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "labels": labels,
+        "weights": weights,
     }
 
+def tokenize_message_style_example(
+    example: dict[str, object],
+    tokenizer,
+    max_seq_length: int,
+) -> dict[str, list[int]]:
+    messages = _coerce_messages(example["messages"])
+    if len(messages) < 2 or messages[-1]["role"] != "assistant":
+        return {"input_ids": [], "attention_mask": [], "labels": [], "weights": []}
+
+    prompt_text = render_message_history(messages[:-1], append_assistant_header=True)
+    response_text = messages[-1]["content"].strip() + "</s>"
+
+    prompt_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+    response_ids = tokenizer(response_text, add_special_tokens=False)["input_ids"]
+
+    # --- token weights: prefer span-derived, then scalar, then uniform ---
+    token_weights = example.get("token_weights")
+    spans = example.get("spans")
+
+    if token_weights is None and spans:
+        # Span feedback exists — compute per-token weights from highlights
+        from span_weights import compute_token_weights
+        scalar = float(example.get("scalar_weight", 1.0))
+        token_weights = compute_token_weights(
+            response_text=messages[-1]["content"].strip(),
+            spans=spans,
+            tokenizer=tokenizer,
+            base_weight=scalar,
+        )
+    elif token_weights is None:
+        # No span feedback — fall back to uniform scalar weight
+        scalar = float(example.get("scalar_weight", 1.0))
+        token_weights = [scalar] * len(response_ids)
+    else:
+        token_weights = token_weights[:len(response_ids)]
+        if len(token_weights) < len(response_ids):
+            token_weights += [1.0] * (len(response_ids) - len(token_weights))
+
+    # --- prompt truncation ---
+    max_prompt_tokens = max_seq_length - base_training.MIN_RESPONSE_TOKENS
+    if len(prompt_ids) > max_prompt_tokens:
+        if max_prompt_tokens <= 0:
+            return {"input_ids": [], "attention_mask": [], "labels": [], "weights": []}
+        prompt_ids = prompt_ids[:max_prompt_tokens]
+
+    available_response_tokens = max_seq_length - len(prompt_ids)
+    if available_response_tokens <= 0:
+        return {"input_ids": [], "attention_mask": [], "labels": [], "weights": []}
+
+    # --- truncate response and weights together ---
+    response_ids = response_ids[:available_response_tokens]
+    token_weights = token_weights[:available_response_tokens]
+
+    # --- combine ---
+    input_ids = prompt_ids + response_ids
+    attention_mask = [1] * len(input_ids)
+    labels = [-100] * len(prompt_ids) + response_ids
+    weights = [0.0] * len(prompt_ids) + token_weights
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels,
+        "weights": weights,
+    }
+
+class WeightedDataCollator(base_training.DataCollatorForSeq2Seq):
+    def __call__(self, features):
+        weights = [f.pop("weights") for f in features]
+        batch = super().__call__(features)
+
+        seq_len = batch["input_ids"].shape[1]
+        padded_weights = []
+        for w in weights:
+            w = list(w)
+            if len(w) < seq_len:
+                w = w + [0.0] * (seq_len - len(w))
+            else:
+                w = w[:seq_len]
+            padded_weights.append(w)
+
+        batch["weights"] = base_training.torch.tensor(
+            padded_weights, dtype=base_training.torch.float32
+        )
+        return batch
+
+class WeightedTrainer(base_training.Trainer):
+    def compute_loss(self, model, inputs, return_outputs=False):
+        labels = inputs.pop("labels")
+        weights = inputs.pop("weights")
+
+        outputs = model(**inputs)
+        logits = outputs.logits
+
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        shift_weights = weights[..., 1:].contiguous()
+
+        loss_fct = base_training.torch.nn.CrossEntropyLoss(reduction="none")
+
+        loss = loss_fct(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+        )
+
+        loss = loss.view(shift_labels.shape)
+
+        # mask out ignored tokens
+        mask = shift_labels != -100
+        loss = loss * shift_weights * mask
+
+        loss = loss.sum() / (shift_weights * mask).sum().clamp(min=1e-8)
+        print("mean weight:", weights.mean().item())
+
+        return (loss, outputs) if return_outputs else loss
 
 def _format_messages_preview(messages_object: object) -> str:
     messages = _coerce_messages(messages_object)
@@ -463,14 +576,20 @@ def main() -> None:
         speaker=args.speaker,
         k=args.k,
         include_last_speaker_line=args.include_last_speaker_line,
-        exclude_act5_scene2=args.exclude_act5_scene2,
-        prevent_scene_bleed=args.prevent_scene_bleed,
         system_prompt=args.system_prompt,
-        use_dynamic_system_prompt=args.use_dynamic_system_prompt,
         encoding=args.encoding,
     )
     if args.limit:
-        message_records = message_records[: args.limit]
+        from conversation_log_reader import load_weighted_examples_from_logs
+
+        # Load live conversation logs instead of (or merged with) the static dataset
+        live_examples = load_weighted_examples_from_logs(
+            system_prompt=args.system_prompt,
+            min_weight=0.5,   # skip examples that got negative feedback
+        )
+
+        # Optionally merge with your existing Hamlet dataset
+        message_records = message_records + live_examples
     if len(message_records) < 2:
         raise ValueError("Need at least two message records to create train/eval split.")
 
@@ -652,7 +771,7 @@ def main() -> None:
         ),
         remove_columns=eval_dataset.column_names,
     ).filter(lambda row: len(row["input_ids"]) > 0)
-    data_collator = base_training.DataCollatorForSeq2Seq(
+    data_collator = WeightedDataCollator(
         tokenizer=tokenizer,
         model=model,
         padding=True,
@@ -684,13 +803,13 @@ def main() -> None:
     if use_cuda:
         _cleanup_cuda_memory()
 
-    trainer = base_training.Trainer(
+    trainer = WeightedTrainer(
         model=model,
         args=training_args,
         train_dataset=tokenized_train_dataset,
         eval_dataset=tokenized_eval_dataset,
         data_collator=data_collator,
-    )
+        )
 
     if use_cuda:
         _cleanup_cuda_memory()

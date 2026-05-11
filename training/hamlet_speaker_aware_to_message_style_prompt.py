@@ -9,21 +9,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
-
-# Ensure the repo root is on sys.path so pipeline modules are importable
-# when this script is run as `python training/hamlet_speaker_aware_to_message_style_prompt.py`.
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
 import full_play_translator
 import speaker_aware_context_filtering as context_filter
-from pipeline import dynamic_system_prompt as dsp
 
 
-DEFAULT_SYSTEM_PROMPT = dsp.BASE_HAMLET_PROMPT
+DEFAULT_SYSTEM_PROMPT = (
+    "You are Hamlet: introspective, philosophical, emotionally conflicted."
+)
 
 
 def _resolve_repo_relative_path(repo_root: Path, raw_path: str) -> Path:
@@ -93,8 +87,6 @@ def _context_records_match_requested_settings(
     speaker: str,
     k: int,
     include_last_speaker_line: bool,
-    exclude_act5_scene2: bool,
-    prevent_scene_bleed: bool,
 ) -> bool:
     if not records:
         return False
@@ -105,8 +97,6 @@ def _context_records_match_requested_settings(
         record_speaker = full_play_translator.speaker_key(str(record.get("speaker", "")))
         record_k = record.get("k")
         record_include_last = record.get("include_last_speaker_line")
-        record_exclude_act5 = record.get("exclude_act5_scene2")
-        record_prevent_bleed = record.get("prevent_scene_bleed")
 
         if record_speaker != requested_speaker:
             return False
@@ -115,10 +105,6 @@ def _context_records_match_requested_settings(
         if not isinstance(record_include_last, bool):
             return False
         if record_include_last != include_last_speaker_line:
-            return False
-        if not isinstance(record_exclude_act5, bool) or record_exclude_act5 != exclude_act5_scene2:
-            return False
-        if not isinstance(record_prevent_bleed, bool) or record_prevent_bleed != prevent_scene_bleed:
             return False
 
     return True
@@ -131,8 +117,6 @@ def _build_context_records_from_full_play(
     speaker: str,
     k: int,
     include_last_speaker_line: bool,
-    exclude_act5_scene2: bool,
-    prevent_scene_bleed: bool,
     encoding: str,
 ) -> list[dict[str, object]]:
     full_play_path = _resolve_repo_relative_path(repo_root, full_play_input_file)
@@ -150,8 +134,6 @@ def _build_context_records_from_full_play(
         target_speaker=speaker,
         k=k,
         include_last_speaker_line=include_last_speaker_line,
-        exclude_act5_scene2=exclude_act5_scene2,
-        prevent_scene_bleed=prevent_scene_bleed,
     )
     validate_context_records(records)
 
@@ -170,8 +152,6 @@ def load_or_build_context_records(
     speaker: str,
     k: int,
     include_last_speaker_line: bool,
-    exclude_act5_scene2: bool,
-    prevent_scene_bleed: bool,
     encoding: str,
 ) -> tuple[list[dict[str, object]], Path]:
     context_path = _resolve_repo_relative_path(repo_root, context_input_file)
@@ -183,8 +163,6 @@ def load_or_build_context_records(
             speaker,
             k,
             include_last_speaker_line,
-            exclude_act5_scene2,
-            prevent_scene_bleed,
         ):
             return records, context_path
 
@@ -195,8 +173,6 @@ def load_or_build_context_records(
             speaker,
             k,
             include_last_speaker_line,
-            exclude_act5_scene2,
-            prevent_scene_bleed,
             encoding,
         )
         print(
@@ -213,8 +189,6 @@ def load_or_build_context_records(
         speaker,
         k,
         include_last_speaker_line,
-        exclude_act5_scene2,
-        prevent_scene_bleed,
         encoding,
     )
     print(
@@ -230,7 +204,6 @@ def build_message_style_records(
     k: int,
     include_last_speaker_line: bool,
     system_prompt: str,
-    use_dynamic_system_prompt: bool = False,
 ) -> list[dict[str, object]]:
     target_key = full_play_translator.speaker_key(target_speaker)
     output_records: list[dict[str, object]] = []
@@ -250,21 +223,10 @@ def build_message_style_records(
                 non_target_turns.append(context_turn)
 
         selected_non_target_turns = non_target_turns[-k:] if k > 0 else []
-
-        active_system_prompt = (
-            dsp.resolve_system_prompt(
-                selected_non_target_turns,
-                base_prompt=system_prompt,
-                target_speaker=target_speaker,
-            )
-            if use_dynamic_system_prompt
-            else system_prompt
-        )
-
         messages: list[dict[str, str]] = [
             {
                 "role": "system",
-                "content": active_system_prompt,
+                "content": system_prompt,
             }
         ]
 
@@ -311,8 +273,7 @@ def build_message_style_records(
                 "k": k,
                 "include_last_speaker_line": include_last_speaker_line,
                 "has_previous_speaker_line": previous_speaker_turn is not None,
-                "dynamic_system_prompt": use_dynamic_system_prompt,
-                "system_prompt": active_system_prompt,
+                "system_prompt": system_prompt,
                 "context_message_count": len(messages) - 2,
             }
         )
@@ -371,7 +332,6 @@ def _message_records_match_requested_settings(
     k: int,
     include_last_speaker_line: bool,
     system_prompt: str,
-    use_dynamic_system_prompt: bool,
 ) -> bool:
     if not records:
         return False
@@ -382,7 +342,6 @@ def _message_records_match_requested_settings(
         record_speaker = full_play_translator.speaker_key(str(record.get("speaker", "")))
         record_k = record.get("k")
         record_include_last = record.get("include_last_speaker_line")
-        record_dynamic = record.get("dynamic_system_prompt")
         record_system_prompt = record.get("system_prompt")
 
         if record_speaker != requested_speaker:
@@ -393,11 +352,7 @@ def _message_records_match_requested_settings(
             return False
         if record_include_last != include_last_speaker_line:
             return False
-        if not isinstance(record_dynamic, bool) or record_dynamic != use_dynamic_system_prompt:
-            return False
-        # When dynamic prompts are active each record has a unique system_prompt,
-        # so only validate the static prompt when dynamic mode is off.
-        if not use_dynamic_system_prompt and record_system_prompt != system_prompt:
+        if record_system_prompt != system_prompt:
             return False
 
     return True
@@ -411,10 +366,7 @@ def load_or_build_message_records(
     speaker: str,
     k: int,
     include_last_speaker_line: bool,
-    exclude_act5_scene2: bool,
-    prevent_scene_bleed: bool,
     system_prompt: str,
-    use_dynamic_system_prompt: bool,
     encoding: str,
 ) -> tuple[list[dict[str, object]], Path]:
     message_path = _resolve_repo_relative_path(repo_root, message_input_file)
@@ -427,7 +379,6 @@ def load_or_build_message_records(
             k,
             include_last_speaker_line,
             system_prompt,
-            use_dynamic_system_prompt,
         ):
             return message_records, message_path
 
@@ -438,8 +389,6 @@ def load_or_build_message_records(
         speaker,
         k,
         include_last_speaker_line,
-        exclude_act5_scene2,
-        prevent_scene_bleed,
         encoding,
     )
     message_records = build_message_style_records(
@@ -448,7 +397,6 @@ def load_or_build_message_records(
         k=k,
         include_last_speaker_line=include_last_speaker_line,
         system_prompt=system_prompt,
-        use_dynamic_system_prompt=use_dynamic_system_prompt,
     )
     validate_message_style_records(message_records)
 
@@ -503,29 +451,6 @@ def parse_args(repo_root: Path) -> argparse.Namespace:
         help="Include the most recent prior target-speaker turn as assistant context.",
     )
     parser.add_argument(
-        "--no-exclude-act5-scene2",
-        dest="exclude_act5_scene2",
-        action="store_false",
-        help="Disable Act 5 Scene 2 exclusion (default: enabled).",
-    )
-    parser.set_defaults(exclude_act5_scene2=True)
-    parser.add_argument(
-        "--no-prevent-scene-bleed",
-        dest="prevent_scene_bleed",
-        action="store_false",
-        help="Disable scene bleed prevention (default: enabled).",
-    )
-    parser.set_defaults(prevent_scene_bleed=True)
-    parser.add_argument(
-        "--dynamic-system-prompt",
-        dest="use_dynamic_system_prompt",
-        action="store_true",
-        help=(
-            "Resolve a relationship-aware system prompt per record based on who "
-            "Hamlet is directly addressing (default: disabled)."
-        ),
-    )
-    parser.add_argument(
         "--system-prompt",
         default=DEFAULT_SYSTEM_PROMPT,
         help="System anchor to prepend to every message-style record.",
@@ -553,10 +478,7 @@ def main() -> None:
         speaker=args.speaker,
         k=args.k,
         include_last_speaker_line=args.include_last_speaker_line,
-        exclude_act5_scene2=args.exclude_act5_scene2,
-        prevent_scene_bleed=args.prevent_scene_bleed,
         system_prompt=args.system_prompt,
-        use_dynamic_system_prompt=args.use_dynamic_system_prompt,
         encoding=args.encoding,
     )
 
