@@ -16,5 +16,5 @@ setuptools
 fastapi
 pydantic
 uvicorn
-bark
+elevenlabs
 sentence-transformers

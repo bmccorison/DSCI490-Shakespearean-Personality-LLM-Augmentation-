@@ -1,34 +1,20 @@
 ''' Handle fastapi endpoints for the front-end interface. '''
 
-import gc
-import importlib
-import io
 import os
-from pathlib import Path
-import shutil
-import subprocess
-import tempfile
-import threading
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-import scipy.io.wavfile as wav
 import uvicorn
 
 from pipeline.feedback_store import load_feedback, save_feedback
-
 from pipeline.lm_generation import (
-    BASE_MODEL_ADAPTER_PATH,
-    attach_named_adapter,
     generate_output,
     get_conversation_id,
     get_message_index,
-    load_base_model_and_tokenizer,
     model_selection,
     refresh_chat_history,
     set_character_context,
-    validate_and_resolve_adapter,
 )
 from pipeline.multimodel import (
     DEFAULT_MAX_TURNS as DEFAULT_MULTIMODEL_MAX_TURNS,
@@ -39,31 +25,22 @@ from pipeline.multimodel import (
     MultiModelParticipant,
     validate_max_turns as validate_multimodel_max_turns,
 )
-
 from pipeline.rag import get_context
+from pipeline.tts import generate_tts_audio, get_voice_options
+from pipeline.utils import (
+    empty_multimodel_session,
+    ensure_loaded_model,
+    resolve_cors_origins,
+    resolve_multimodel_persona,
+)
 
-BARK_HISTORY_PROMPT = os.getenv("BARK_HISTORY_PROMPT", "v2/en_speaker_6")
-BARK_CHARACTER_PROMPTS = {
-    "hamlet": "v2/en_speaker_9",
-}
-ESPEAK_DEFAULT_VOICE = "en-gb+m3"
-ESPEAK_DEFAULT_SPEED = "145"
-ESPEAK_DEFAULT_PITCH = "42"
-ESPEAK_DEFAULT_AMPLITUDE = "165"
-ESPEAK_CHARACTER_VOICES = {
-    "hamlet": "en-gb+m3",
-}
-
-_bark_generate_audio = None
-_bark_sample_rate = None
-_bark_preload_models = None
-_bark_models_preloaded = False
-_bark_load_error = None
 
 app = FastAPI()
 default_cors_origins = "http://localhost:6969,http://127.0.0.1:6969"
-configured_cors_origins = os.getenv("CORS_ALLOW_ORIGINS", default_cors_origins)
-allowed_origins = [origin.strip() for origin in configured_cors_origins.split(",") if origin.strip()]
+allowed_origins = resolve_cors_origins(
+    os.getenv("CORS_ALLOW_ORIGINS", default_cors_origins),
+    default_cors_origins,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -71,15 +48,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Resident model state — one base model is kept loaded across adapter swaps.
-# LoRA adapters are stored by name in a single PeftModel to avoid redundant base reloads.
-_resident_model_name = ""
-_resident_model = None
-_resident_tokenizer = None
-_resident_adapter_slots: dict[str, str] = {}  # adapter_path → named slot in PeftModel
-_next_slot = 0
-_model_lock = threading.Lock()
 
 # Single-chat selection — persisted across /api/select_model calls.
 selected_chat_model_name = ""
@@ -114,205 +82,6 @@ class MultiModelConfigRequest(BaseModel):
     max_turns: int
 
 
-def _release_resident_model() -> None:
-    '''Release the resident base model and all loaded adapter slots.'''
-    global _resident_model_name, _resident_model, _resident_tokenizer
-    global _resident_adapter_slots, _next_slot
-
-    prev_model = _resident_model
-    prev_tokenizer = _resident_tokenizer
-    _resident_model = None
-    _resident_tokenizer = None
-    _resident_model_name = ""
-    _resident_adapter_slots = {}
-    _next_slot = 0
-
-    if prev_model is None and prev_tokenizer is None:
-        return
-
-    del prev_model, prev_tokenizer
-    gc.collect()
-
-    try:
-        import torch
-    except Exception:
-        return
-
-    cuda = getattr(torch, "cuda", None)
-    if cuda is None or not hasattr(cuda, "is_available") or not cuda.is_available():
-        return
-
-    cuda.empty_cache()
-    if hasattr(cuda, "ipc_collect"):
-        cuda.ipc_collect()
-
-
-def _ensure_loaded_model(model_name: str, adapter_path: str):
-    '''Return the active model and tokenizer, loading or hot-swapping adapters as needed.
-
-    The base model stays resident as long as model_name does not change. LoRA adapters are
-    loaded by name into a single PeftModel, so switching between participants with the same
-    base model costs only a set_adapter call rather than a full model reload.
-
-    Reverting to the base-model-only pseudo-adapter requires a full reload because extracting
-    the bare base from a PeftModel is not supported without reloading from disk.
-    '''
-    global _resident_model_name, _resident_model, _resident_tokenizer
-    global _resident_adapter_slots, _next_slot
-
-    norm_model = model_name.strip()
-    norm_adapter = adapter_path.strip()
-    if not norm_model or not norm_adapter:
-        raise ValueError("Model name and adapter path are required.")
-
-    with _model_lock:
-        base_only = norm_adapter == BASE_MODEL_ADAPTER_PATH
-        peft_model_loaded = hasattr(_resident_model, "set_adapter")
-
-        # A base-model-only participant after adapter-bearing ones forces a reload because
-        # we cannot cleanly strip PeftModel wrapping without touching disk.
-        if norm_model != _resident_model_name or (base_only and peft_model_loaded):
-            _release_resident_model()
-            _resident_model, _resident_tokenizer = load_base_model_and_tokenizer(norm_model)
-            _resident_model_name = norm_model
-
-        if not base_only:
-            if norm_adapter not in _resident_adapter_slots:
-                resolved = validate_and_resolve_adapter(norm_model, norm_adapter)
-                slot_name = f"slot_{_next_slot}"
-                _next_slot += 1
-                _resident_model = attach_named_adapter(_resident_model, resolved, slot_name)
-                _resident_adapter_slots[norm_adapter] = slot_name
-            else:
-                _resident_model.set_adapter(_resident_adapter_slots[norm_adapter])
-
-        return _resident_model, _resident_tokenizer
-
-
-def _resolve_bark_use_gpu() -> bool:
-    '''Return whether Bark should attempt GPU execution.'''
-    configured_value = os.getenv("BARK_USE_GPU")
-    if configured_value is not None:
-        return configured_value.strip().lower() in {"1", "true", "yes", "on"}
-
-    try:
-        import torch
-    except Exception:
-        return False
-
-    return bool(torch.cuda.is_available())
-
-
-def _load_bark_dependencies():
-    '''Import Bark lazily so the API can still start when TTS is unavailable.'''
-    global _bark_generate_audio, _bark_sample_rate, _bark_preload_models, _bark_models_preloaded, _bark_load_error
-
-    if _bark_generate_audio is not None and _bark_sample_rate is not None:
-        _preload_bark_models_if_needed()
-        return _bark_generate_audio, _bark_sample_rate
-
-    if _bark_load_error is not None:
-        raise RuntimeError(_bark_load_error)
-
-    try:
-        bark_module = importlib.import_module("bark")
-    except Exception as exc:
-        _bark_load_error = (
-            "TTS backend is unavailable on this host. "
-            "Bark could not be imported, likely because the installed torchaudio build "
-            "requires CUDA libraries that are not present. "
-            f"Original error: {exc}"
-        )
-        raise RuntimeError(_bark_load_error) from exc
-
-    _bark_generate_audio = bark_module.generate_audio
-    _bark_sample_rate = bark_module.SAMPLE_RATE
-    _bark_preload_models = getattr(bark_module, "preload_models", None)
-    _preload_bark_models_if_needed()
-    return _bark_generate_audio, _bark_sample_rate
-
-
-def _preload_bark_models_if_needed():
-    '''Preload Bark models once so CPU/GPU selection is applied via Bark's supported API.'''
-    global _bark_models_preloaded, _bark_load_error
-
-    if _bark_preload_models is None or _bark_models_preloaded:
-        return
-
-    try:
-        use_gpu = _resolve_bark_use_gpu()
-        _bark_preload_models(
-            text_use_gpu=use_gpu,
-            coarse_use_gpu=use_gpu,
-            fine_use_gpu=use_gpu,
-            codec_use_gpu=use_gpu,
-        )
-        _bark_models_preloaded = True
-    except Exception as exc:
-        _bark_load_error = (
-            "TTS backend is unavailable on this host. "
-            "Bark models could not be prepared. "
-            f"Original error: {exc}"
-        )
-        raise RuntimeError(_bark_load_error) from exc
-
-
-def _resolve_bark_history_prompt(character: str) -> str:
-    '''Resolve Bark speaker preset for the selected character.'''
-    normalized_character = character.strip().lower()
-    override_key = f"BARK_HISTORY_PROMPT_{normalized_character.upper()}"
-    configured_override = os.getenv(override_key)
-    if configured_override:
-        return configured_override
-
-    return BARK_CHARACTER_PROMPTS.get(normalized_character, BARK_HISTORY_PROMPT)
-
-
-def _resolve_tts_fallback_binary() -> str | None:
-    '''Resolve an offline espeak binary available on this host.'''
-    for candidate in ("espeak-ng", "espeak"):
-        resolved = shutil.which(candidate)
-        if resolved:
-            return resolved
-    return None
-
-
-def _character_key(character: str) -> str:
-    '''Normalize character names for env-variable lookup keys.'''
-    if not character:
-        return "DEFAULT"
-    return "".join(next_char if next_char.isalnum() else "_" for next_char in character.strip().upper())
-
-
-def _resolve_character_espeak_voice(character: str) -> str:
-    '''Resolve an espeak voice per character, with env var overrides.'''
-    character_lookup_key = _character_key(character)
-    configured_voice = os.getenv(f"ESPEAK_VOICE_{character_lookup_key}")
-    if configured_voice:
-        return configured_voice
-
-    default_voice = os.getenv("ESPEAK_VOICE", ESPEAK_DEFAULT_VOICE)
-    mapped_voice = ESPEAK_CHARACTER_VOICES.get(character.strip().lower())
-    if mapped_voice:
-        return mapped_voice
-    return default_voice
-
-
-def _resolve_piper_model_path(character: str) -> Path | None:
-    '''Resolve an optional Piper model path (character-specific override first).'''
-    character_lookup_key = _character_key(character)
-    configured_path = os.getenv(
-        f"PIPER_MODEL_PATH_{character_lookup_key}"
-    ) or os.getenv("PIPER_MODEL_PATH")
-    if not configured_path:
-        return None
-
-    resolved_path = Path(configured_path).expanduser()
-    if not resolved_path.exists():
-        return None
-    return resolved_path
-
-
 class SpanFeedback(BaseModel):
     '''Span-level feedback for highlighted response text.'''
 
@@ -344,10 +113,7 @@ def submit_feedback(feedback: MessageFeedback):
 
     log_file = matching_files[0]
 
-    # Load existing feedback so we don't overwrite prior entries
     existing_feedback = load_feedback(log_file)
-
-    # Replace or append feedback for this message index
     existing_feedback = [
         record for record in existing_feedback
         if record.get("message_index") != feedback.message_index
@@ -380,106 +146,6 @@ def get_feedback(conversation_id: str):
     return {"feedback": load_feedback(matching_files[0])}
 
 
-def _generate_piper_tts_audio(text: str, character: str) -> bytes:
-    '''Generate WAV audio with Piper when binary and voice model are available.'''
-    piper_binary = shutil.which("piper")
-    if piper_binary is None:
-        raise RuntimeError("Piper is not installed on this host.")
-
-    model_path = _resolve_piper_model_path(character)
-    if model_path is None:
-        raise RuntimeError("No Piper voice model is configured. Set PIPER_MODEL_PATH.")
-
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-        output_path = Path(temp_file.name)
-
-    command = [piper_binary, "--model", str(model_path), "--output_file", str(output_path)]
-    configured_speaker_id = os.getenv("PIPER_SPEAKER_ID")
-    if configured_speaker_id:
-        command.extend(["--speaker", configured_speaker_id])
-
-    try:
-        completed = subprocess.run(
-            command,
-            input=text,
-            capture_output=True,
-            check=False,
-            text=True,
-        )
-        if completed.returncode != 0:
-            stderr = completed.stderr.strip() or completed.stdout.strip()
-            raise RuntimeError(stderr or f"piper failed with exit code {completed.returncode}.")
-        return output_path.read_bytes()
-    finally:
-        try:
-            output_path.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def _generate_espeak_tts_audio(text: str, character: str) -> bytes:
-    '''Generate WAV audio with tuned espeak settings for a less robotic fallback voice.'''
-    tts_binary = _resolve_tts_fallback_binary()
-    if tts_binary is None:
-        raise RuntimeError("No CPU espeak fallback was found. Install espeak or espeak-ng.")
-
-    voice = _resolve_character_espeak_voice(character)
-    speed = os.getenv("ESPEAK_SPEED", ESPEAK_DEFAULT_SPEED)
-    pitch = os.getenv("ESPEAK_PITCH", ESPEAK_DEFAULT_PITCH)
-    amplitude = os.getenv("ESPEAK_AMPLITUDE", ESPEAK_DEFAULT_AMPLITUDE)
-
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-        output_path = Path(temp_file.name)
-
-    try:
-        completed = subprocess.run(
-            [
-                tts_binary,
-                "-w",
-                str(output_path),
-                "-v",
-                voice,
-                "-s",
-                speed,
-                "-p",
-                pitch,
-                "-a",
-                amplitude,
-                text,
-            ],
-            capture_output=True,
-            check=False,
-            text=True,
-        )
-        if completed.returncode != 0:
-            stderr = completed.stderr.strip() or completed.stdout.strip()
-            raise RuntimeError(stderr or f"{Path(tts_binary).name} failed with exit code {completed.returncode}.")
-
-        return output_path.read_bytes()
-    finally:
-        try:
-            output_path.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def _generate_fallback_tts_audio(text: str, character: str = "Hamlet") -> bytes:
-    '''Generate WAV audio from available CPU-safe TTS backends.'''
-    fallback_errors = []
-
-    try:
-        return _generate_piper_tts_audio(text, character)
-    except RuntimeError as piper_error:
-        fallback_errors.append(f"piper: {piper_error}")
-
-    try:
-        return _generate_espeak_tts_audio(text, character)
-    except RuntimeError as espeak_error:
-        fallback_errors.append(f"espeak: {espeak_error}")
-
-    raise RuntimeError(" ; ".join(fallback_errors))
-
-
 @app.get("/api/generate_response")
 def generate_response_endpoint(question: str, shakespeare_style: bool = False):
     ''' Endpoint to trigger the response pipeline given a user question. '''
@@ -491,7 +157,7 @@ def generate_response_endpoint(question: str, shakespeare_style: bool = False):
     rag_context = get_context(question)
 
     try:
-        active_model, active_tokenizer = _ensure_loaded_model(
+        active_model, active_tokenizer = ensure_loaded_model(
             selected_chat_model_name,
             selected_chat_adapter_path,
         )
@@ -545,7 +211,7 @@ def select_model(model_name: str, adapter_path: str):
     normalized_model_name = model_name.strip()
     normalized_adapter_path = adapter_path.strip()
     try:
-        _ensure_loaded_model(normalized_model_name, normalized_adapter_path)
+        ensure_loaded_model(normalized_model_name, normalized_adapter_path)
         selected_chat_model_name = normalized_model_name
         selected_chat_adapter_path = normalized_adapter_path
     except (FileNotFoundError, ValueError) as exc:
@@ -564,56 +230,6 @@ def select_model(model_name: str, adapter_path: str):
 def get_models():
     ''' Endpoint to get the list of available models and adapters. '''
     return model_selection()
-
-
-def _empty_multimodel_session() -> dict[str, object]:
-    '''Return a stable idle payload for frontend session polling.'''
-    return {
-        "active": False,
-        "status": "idle",
-        "is_stopped": False,
-        "is_complete": True,
-        "turn_count": 0,
-        "turns": [],
-        "last_turn": None,
-        "next_speaker": None,
-    }
-
-
-def _resolve_multimodel_persona(
-    model_name: str,
-    adapter_path: str,
-) -> tuple[str, str]:
-    '''Resolve a multimodel participant's character/work from published model config.'''
-    selected_model = next(
-        (model for model in model_selection() if model["name"] == model_name),
-        None,
-    )
-    if selected_model is None:
-        raise ValueError(f"Model is not available: {model_name}")
-
-    selected_adapter = next(
-        (
-            adapter
-            for adapter in selected_model["adapters"]
-            if adapter["path"] == adapter_path
-        ),
-        None,
-    )
-    if selected_adapter is None:
-        raise ValueError(f"Adapter is not available for {model_name}: {adapter_path}")
-
-    character = str(
-        selected_adapter.get("character") or selected_model.get("character") or ""
-    ).strip()
-    work = str(
-        selected_adapter.get("work") or selected_model.get("work") or ""
-    ).strip()
-    if not character or not work:
-        raise ValueError(
-            f"Character metadata is missing for {model_name} with {adapter_path}."
-        )
-    return character, work
 
 
 @app.get("/api/multimodel/config")
@@ -648,7 +264,7 @@ def start_multimodel_conversation(payload: MultiModelStartRequest):
     try:
         participants = []
         for participant in payload.participants:
-            character, work = _resolve_multimodel_persona(
+            character, work = resolve_multimodel_persona(
                 participant.model_name,
                 participant.adapter_path,
             )
@@ -688,7 +304,7 @@ def generate_multimodel_turn():
         return active_multimodel_conversation.to_dict()
 
     try:
-        next_turn = active_multimodel_conversation.generate_next_turn(_ensure_loaded_model)
+        next_turn = active_multimodel_conversation.generate_next_turn(ensure_loaded_model)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -701,7 +317,7 @@ def generate_multimodel_turn():
 def stop_multimodel_conversation():
     '''Stop the active model-to-model conversation before any later turn.'''
     if active_multimodel_conversation is None:
-        return _empty_multimodel_session()
+        return empty_multimodel_session()
 
     active_multimodel_conversation.stop()
     return active_multimodel_conversation.to_dict()
@@ -711,42 +327,33 @@ def stop_multimodel_conversation():
 def get_multimodel_session():
     '''Return the current model-to-model conversation session, if any.'''
     if active_multimodel_conversation is None:
-        return _empty_multimodel_session()
+        return empty_multimodel_session()
 
     return active_multimodel_conversation.to_dict()
 
 
+@app.get("/api/voices")
+def list_voices():
+    ''' Endpoint to list available ElevenLabs voice options. '''
+    return {"voices": get_voice_options()}
+
+
 @app.post("/api/tts")
-def generate_tts(text: str, character: str = "Hamlet"):
-    ''' Endpoint to generate TTS audio from the given text. '''
-    normalized_text = text.strip()
-    if not normalized_text:
-        raise HTTPException(status_code=400, detail="Text is required.")
-
+def generate_tts(text: str, character: str = "Hamlet", voice: str | None = None):
+    ''' Endpoint to generate TTS audio from the given text via ElevenLabs. '''
     try:
-        generate_audio, sample_rate = _load_bark_dependencies()
-    except RuntimeError as bark_error:
-        try:
-            fallback_audio = _generate_fallback_tts_audio(normalized_text, character=character)
-        except RuntimeError as fallback_error:
-            raise HTTPException(
-                status_code=503,
-                detail=f"{bark_error} Fallback TTS also failed: {fallback_error}",
-            ) from fallback_error
-        return Response(content=fallback_audio, media_type="audio/wav")
+        audio_bytes, media_type = generate_tts_audio(
+            text,
+            character=character,
+            voice=voice,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    try:
-        audio_array = generate_audio(
-            normalized_text,
-            history_prompt=_resolve_bark_history_prompt(character),
-        )  # TODO: Refactor to use character specific voices
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"TTS generation failed: {exc}") from exc
+    return Response(content=audio_bytes, media_type=media_type)
 
-    buffer = io.BytesIO()
-    wav.write(buffer, sample_rate, audio_array)
-    buffer.seek(0)
-    return Response(content=buffer.read(), media_type="audio/wav")
 
 if __name__ == "__main__":
     backend_port = int(os.getenv("BACKEND_PORT", os.getenv("PORT", "8000")))

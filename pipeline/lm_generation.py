@@ -140,7 +140,6 @@ def get_chat_template(tokenizer, usr_msg=None, context=None):
     return tokenizer(prompt, return_tensors="pt")
     
 
-# TODO refactor this to make it better (and support multiple conversations/users)
 def get_system_prompt() -> str:
     ''' Returns the system prompt for the conversation. '''
     return (

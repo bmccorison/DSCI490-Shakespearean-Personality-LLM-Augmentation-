@@ -10,6 +10,7 @@ const MULTIMODEL_MIN_SPEAKERS = 2;
 const MULTIMODEL_MAX_SPEAKERS = 4;
 const MULTIMODEL_DEFAULT_MAX_TURNS = 12;
 const MULTIMODEL_HARD_MAX_TURNS = 20;
+const DEFAULT_VOICE_OPTION = "default";
 
 function MessageAvatar({ type = "assistant" }) {
   const isUser = type === "user";
@@ -296,6 +297,27 @@ function normalizeMultiModelConfig(payload) {
   };
 }
 
+function normalizeVoiceOptions(payload) {
+  const rawVoices = Array.isArray(payload?.voices)
+    ? payload.voices
+    : Array.isArray(payload)
+      ? payload
+      : [];
+
+  return rawVoices
+    .map((voice) => {
+      if (!voice || typeof voice !== "object") return null;
+      const name = typeof voice.name === "string" ? voice.name.trim() : "";
+      if (!name) return null;
+      return {
+        name,
+        voiceId:
+          typeof voice.voice_id === "string" ? voice.voice_id.trim() : "",
+      };
+    })
+    .filter(Boolean);
+}
+
 function formatTimestamp(date = new Date()) {
   return date.toLocaleTimeString([], {
     hour: "2-digit",
@@ -393,6 +415,8 @@ export default function App() {
   );
   const [multiError, setMultiError] = useState("");
   const [isMultiRunning, setIsMultiRunning] = useState(false);
+  const [voiceOptions, setVoiceOptions] = useState([]);
+  const [characterVoices, setCharacterVoices] = useState({});
   const [activityLog, setActivityLog] = useState([]);
   const [feedbackOpen, setFeedbackOpen] = useState(null);
   const [spans, setSpans] = useState({});
@@ -645,6 +669,33 @@ export default function App() {
       updateStatus(`Loaded ${modelList.length} model option(s).`, "models");
     }
     return modelList;
+  };
+
+  const fetchVoiceOptions = async () => {
+    const payload = await apiGet("/voices");
+    const nextVoices = normalizeVoiceOptions(payload);
+    setVoiceOptions(nextVoices);
+    return nextVoices;
+  };
+
+  const resolveVoiceForCharacter = (characterName) => {
+    const stored = characterVoices[characterName];
+    if (stored && voiceOptions.some((option) => option.name === stored)) {
+      return stored;
+    }
+    return voiceOptions[0]?.name || DEFAULT_VOICE_OPTION;
+  };
+
+  const handleCharacterVoiceChange = (characterName, nextVoice) => {
+    if (!characterName) return;
+    setCharacterVoices((previous) => ({
+      ...previous,
+      [characterName]: nextVoice,
+    }));
+    updateStatus(
+      `Voice for ${characterName} set to ${nextVoice}.`,
+      "voice",
+    );
   };
 
   const fetchMultiModelConfig = async () => {
@@ -1034,6 +1085,19 @@ export default function App() {
           );
         }
 
+        try {
+          const fetchedVoices = await fetchVoiceOptions();
+          recordActivity(
+            "voice",
+            `Loaded ${fetchedVoices.length} voice option(s).`,
+          );
+        } catch (voicesError) {
+          recordActivity(
+            "voice",
+            `Voice options unavailable: ${voicesError.message}`,
+          );
+        }
+
         const loadedModels = await retryStartupAction(
           () => fetchModels(false),
           {
@@ -1141,7 +1205,11 @@ export default function App() {
     setIsAudioPaused(false);
     updateStatus("Preparing spoken performance...", "speech");
     try {
-      const audioBlob = await apiPostBlob("/tts", { text, character });
+      const audioBlob = await apiPostBlob("/tts", {
+        text,
+        character,
+        voice: resolveVoiceForCharacter(character),
+      });
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
       activeAudioRef.current = audio;
@@ -1304,7 +1372,7 @@ export default function App() {
                 Single-character settings
               </summary>
 
-              <div className="mt-3 grid gap-3 md:grid-cols-3">
+              <div className="mt-3 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
                 <div>
                   <label className="block text-sm font-medium text-maroon">
                     Model
@@ -1369,6 +1437,34 @@ export default function App() {
                       </option>
                     ))}
                   </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-maroon">
+                    Voice
+                  </label>
+                  <select
+                    className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                    value={resolveVoiceForCharacter(character)}
+                    onChange={(event) =>
+                      handleCharacterVoiceChange(character, event.target.value)
+                    }
+                    disabled={isMultiRunning || voiceOptions.length === 0}
+                  >
+                    {voiceOptions.map((option) => (
+                      <option key={option.name} value={option.name}>
+                        {option.name}
+                      </option>
+                    ))}
+                    {voiceOptions.length === 0 && (
+                      <option>No voices available</option>
+                    )}
+                  </select>
+                  <p className="mt-1 min-h-10 text-sm text-maroon/75">
+                    {voiceOptions.length === 0
+                      ? "Voice list unavailable. Check the TTS backend."
+                      : `Voice played for ${character}.`}
+                  </p>
                 </div>
               </div>
 
@@ -1920,6 +2016,36 @@ export default function App() {
                               {name}
                             </option>
                           ))}
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="mt-3">
+                      <label className="block">
+                        <span className="text-sm font-medium text-maroon">
+                          Voice
+                        </span>
+                        <select
+                          className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
+                          value={resolveVoiceForCharacter(participant.character)}
+                          onChange={(event) =>
+                            handleCharacterVoiceChange(
+                              participant.character,
+                              event.target.value,
+                            )
+                          }
+                          disabled={
+                            isMultiRunning || voiceOptions.length === 0
+                          }
+                        >
+                          {voiceOptions.map((option) => (
+                            <option key={option.name} value={option.name}>
+                              {option.name}
+                            </option>
+                          ))}
+                          {voiceOptions.length === 0 && (
+                            <option>No voices available</option>
+                          )}
                         </select>
                       </label>
                     </div>

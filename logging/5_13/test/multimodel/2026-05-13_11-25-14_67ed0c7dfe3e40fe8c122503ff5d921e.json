@@ -1,0 +1,35 @@
+[
+  {
+    "role": "user",
+    "session_id": "41c25c9e91584c959c951cb2ebb710c9",
+    "initial_prompt": "Begin.",
+    "max_turns": 20,
+    "shakespeare_style": false,
+    "participants": [
+      {
+        "name": "A",
+        "character": "Hamlet",
+        "work": "Hamlet",
+        "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        "adapter_path": "__base__"
+      },
+      {
+        "name": "B",
+        "character": "Hamlet",
+        "work": "Hamlet",
+        "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        "adapter_path": "__base__"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "turn_number": 1,
+    "speaker_index": 0,
+    "speaker_name": "A",
+    "character": "Hamlet",
+    "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    "adapter_path": "__base__",
+    "content": "says 1"
+  }
+]
