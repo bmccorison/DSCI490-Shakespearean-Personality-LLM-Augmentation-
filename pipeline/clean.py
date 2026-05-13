@@ -11,6 +11,9 @@ _ARTIFACT_RE = re.compile(
     r'</?'
     r'[ \t]*'
     r'(?:'
+      # Explicitly handle leaked role separators like </|assistant| and </|system|
+      r'\|(?:assistant|system)\|>?'
+    r'|'
       r'\|[\w\-]*'
       r'(?:\|[>})]?|[>})]|(?=[\s<]|$))'
     r'|think\b[^<>]*>?'

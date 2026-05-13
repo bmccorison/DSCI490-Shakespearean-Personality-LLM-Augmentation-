@@ -1,0 +1,10 @@
+[
+  {
+    "role": "user",
+    "content": "Context: Ghost: Mark me.\nHamlet: I will.\n\nPlayer Queen: Nor Earth to me give food, nor heaven light, Sport and repose lock from me day and night, To desperation turn my trust and hope, An anchor's cheer in prison be my scope. Each opposite that blanks the face of joy Meet what I would have well and it destroy. Both here and hence pursue me lasting strife, If, once a widow, ever I be wife.\nPlayer King: 'Tis deeply sworn. Sweet, leave me here awhile. My spirits grow dull, and fain I would beguile The tedious day with sleep.\nPlayer Queen: Sleep rock thy brain, And never come mischance between us twain.\nGertrude: The lady doth protest too much, methinks.\nHamlet: O, but she'll keep her word.\n\nGhost: Mark me.\nGhost: My hour is almost come When I to sulf'rous and tormenting flames Must render up myself.\nGhost: Pity me not, but lend thy serious hearing To what I shall unfold.\nHamlet: Speak. I am bound to hear.\n\nWho are you?"
+  },
+  {
+    "role": "assistant",
+    "content": "(The character) Is a ghost. They appear to speak through the medium of a haunted house. Their appearance and voice convey their distress and frustration, which they cannot express in their physical form. Their tone is somber and melancholic, and their speech is filled with longing and regret for what has been lost. The ghost urges Hamlet to listen to them closely as they share their tragic past."
+  }
+]

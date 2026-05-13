@@ -74,6 +74,7 @@ class MultiModelStartRequest(BaseModel):
     participants: list[MultiModelParticipantRequest]
     max_turns: int | None = None
     shakespeare_style: bool = False
+    rag_enabled: bool = True
 
 
 class MultiModelConfigRequest(BaseModel):
@@ -147,14 +148,18 @@ def get_feedback(conversation_id: str):
 
 
 @app.get("/api/generate_response")
-def generate_response_endpoint(question: str, shakespeare_style: bool = False):
+def generate_response_endpoint(
+    question: str,
+    shakespeare_style: bool = False,
+    rag_enabled: bool = True,
+):
     ''' Endpoint to trigger the response pipeline given a user question. '''
     global selected_chat_model_name, selected_chat_adapter_path
 
     if not selected_chat_model_name or not selected_chat_adapter_path:
         raise HTTPException(status_code=400, detail="Model is not loaded. Call /api/select_model first.")
 
-    rag_context = get_context(question)
+    rag_context = get_context(question) if rag_enabled else None
 
     try:
         active_model, active_tokenizer = ensure_loaded_model(
@@ -282,11 +287,15 @@ def start_multimodel_conversation(payload: MultiModelStartRequest):
             if payload.max_turns is None
             else payload.max_turns
         )
+        rag_context = (
+            get_context(payload.initial_prompt) if payload.rag_enabled else ""
+        )
         active_multimodel_conversation = MultiModelConversation(
             participants=participants,
             initial_prompt=payload.initial_prompt,
             max_turns=max_turns,
             shakespeare_style=payload.shakespeare_style,
+            rag_context=rag_context,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

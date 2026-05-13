@@ -270,7 +270,20 @@ function findProfileForCharacter(modelList = [], characterName = "") {
   );
 }
 
-function createMultiModelParticipant(index, modelList = []) {
+function pickDefaultVoiceForSpeaker(speakerIndex, voiceList = []) {
+  if (!Array.isArray(voiceList) || voiceList.length === 0) {
+    return "";
+  }
+  // Prefer named voices over the generic "default" entry so concurrent speakers
+  // don't all collide on the same voice.
+  const distinctVoices = voiceList.filter(
+    (option) => option && option.name && option.name !== DEFAULT_VOICE_OPTION,
+  );
+  const pool = distinctVoices.length > 0 ? distinctVoices : voiceList;
+  return pool[speakerIndex % pool.length].name;
+}
+
+function createMultiModelParticipant(index, modelList = [], voiceList = []) {
   const modelProfiles = buildModelProfiles(modelList);
   const defaultProfile = modelProfiles[index % modelProfiles.length] ?? null;
   return {
@@ -279,6 +292,7 @@ function createMultiModelParticipant(index, modelList = []) {
     work: defaultProfile?.work || DEFAULT_WORK,
     model_name: defaultProfile?.modelName || "",
     adapter_path: defaultProfile?.adapterPath || "",
+    voice: pickDefaultVoiceForSpeaker(index, voiceList),
   };
 }
 
@@ -388,6 +402,8 @@ export default function App() {
   const [isAudioPaused, setIsAudioPaused] = useState(false);
   const [isShakespeareStyleEnabled, setIsShakespeareStyleEnabled] =
     useState(false);
+  const [isAutoSpeakEnabled, setIsAutoSpeakEnabled] = useState(false);
+  const [isRagEnabled, setIsRagEnabled] = useState(true);
   const [multiModelConfig, setMultiModelConfig] = useState({
     defaultMaxTurns: MULTIMODEL_DEFAULT_MAX_TURNS,
     hardMaxTurns: MULTIMODEL_HARD_MAX_TURNS,
@@ -430,6 +446,11 @@ export default function App() {
   const activeAudioUrlRef = useRef("");
   const pendingModelApplyCountRef = useRef(0);
   const multiStopRequestedRef = useRef(false);
+  const isAutoSpeakEnabledRef = useRef(isAutoSpeakEnabled);
+
+  useEffect(() => {
+    isAutoSpeakEnabledRef.current = isAutoSpeakEnabled;
+  }, [isAutoSpeakEnabled]);
 
   const modelDetails = useMemo(
     () => models.find((model) => model.name === selectedModel),
@@ -675,6 +696,16 @@ export default function App() {
     const payload = await apiGet("/voices");
     const nextVoices = normalizeVoiceOptions(payload);
     setVoiceOptions(nextVoices);
+    setMultiParticipants((previous) =>
+      previous.map((participant, index) =>
+        participant.voice
+          ? participant
+          : {
+              ...participant,
+              voice: pickDefaultVoiceForSpeaker(index, nextVoices),
+            },
+      ),
+    );
     return nextVoices;
   };
 
@@ -827,6 +858,32 @@ export default function App() {
     });
   };
 
+  const handleAutoSpeakToggle = () => {
+    setIsAutoSpeakEnabled((isEnabled) => {
+      const nextValue = !isEnabled;
+      updateStatus(
+        nextValue
+          ? "Auto-speak enabled — replies will be spoken aloud."
+          : "Auto-speak disabled.",
+        "auto-speak",
+      );
+      return nextValue;
+    });
+  };
+
+  const handleRagToggle = () => {
+    setIsRagEnabled((isEnabled) => {
+      const nextValue = !isEnabled;
+      updateStatus(
+        nextValue
+          ? "RAG retrieval enabled."
+          : "RAG retrieval disabled.",
+        "rag",
+      );
+      return nextValue;
+    });
+  };
+
   const parseMultiMaxTurns = () => {
     const parsedTurns = Number(multiMaxTurns);
     if (!Number.isFinite(parsedTurns)) {
@@ -931,7 +988,11 @@ export default function App() {
       const nextParticipants = [...previous];
       while (nextParticipants.length < boundedCount) {
         nextParticipants.push(
-          createMultiModelParticipant(nextParticipants.length, models),
+          createMultiModelParticipant(
+            nextParticipants.length,
+            models,
+            voiceOptions,
+          ),
         );
       }
       return nextParticipants;
@@ -966,6 +1027,7 @@ export default function App() {
       initial_prompt: initialPrompt,
       max_turns: parseMultiMaxTurns(),
       shakespeare_style: isShakespeareStyleEnabled,
+      rag_enabled: isRagEnabled,
       participants,
     };
   };
@@ -1000,6 +1062,14 @@ export default function App() {
     setMultiStatus("Starting model conversation...");
     recordActivity("multimodel", `Prompt sent: ${initialPrompt}`);
 
+    // Snapshot the participants (with their per-speaker voices) so the loop
+    // routes auto-speak by speaker_index even if the array changes later.
+    const participantsSnapshot = visibleMultiParticipants.map((p) => ({
+      name: p.name,
+      character: p.character,
+      voice: p.voice,
+    }));
+
     try {
       await saveMultiModelConfig(startPayload.max_turns);
       let session = await apiPostJson("/multimodel/start", startPayload);
@@ -1020,6 +1090,22 @@ export default function App() {
           recordActivity(
             "multimodel",
             `${session.last_turn.speaker_name} added turn ${session.last_turn.turn_number}.`,
+          );
+        }
+        if (
+          isAutoSpeakEnabledRef.current &&
+          !multiStopRequestedRef.current &&
+          session.last_turn?.content
+        ) {
+          const turn = session.last_turn;
+          const turnMessageId = `multi-${turn.turn_number}-${turn.speaker_name}`;
+          const speakerSnapshot =
+            participantsSnapshot[Number(turn.speaker_index)] ?? null;
+          await handleSpeak(
+            turnMessageId,
+            turn.content,
+            speakerSnapshot?.character || turn.character,
+            speakerSnapshot?.voice,
           );
         }
       }
@@ -1043,6 +1129,8 @@ export default function App() {
   const handleStopMultiConversation = async () => {
     multiStopRequestedRef.current = true;
     setMultiStatus("Stopping after the current turn...");
+    releaseActiveAudio();
+    clearPlaybackState();
     try {
       const session = await apiPostJson("/multimodel/stop");
       if (Array.isArray(session.turns)) {
@@ -1171,6 +1259,7 @@ export default function App() {
       const payload = await apiGet("/generate_response", {
         question,
         shakespeare_style: isShakespeareStyleEnabled,
+        rag_enabled: isRagEnabled,
       });
       const answerText = parseAssistantReply(payload);
       const confidence =
@@ -1178,17 +1267,23 @@ export default function App() {
           ? `\n\nConfidence: ${payload.confidence_score}`
           : "";
 
+      const assistantMessageId = `assistant-${Date.now()}`;
+      const assistantContent = `${answerText}${confidence}`;
       setMessages((previous) => [
         ...previous,
         {
-          id: `assistant-${Date.now()}`,
+          id: assistantMessageId,
           role: "assistant",
-          content: `${answerText}${confidence}`,
+          content: assistantContent,
           conversationId: payload?.conversation_id ?? "",
           messageIndex: payload?.message_index ?? 0,
         },
       ]);
       updateStatus("A reply hath arrived.", "reply");
+
+      if (isAutoSpeakEnabledRef.current && answerText.trim().length > 0) {
+        handleSpeak(assistantMessageId, answerText, character).catch(() => {});
+      }
     } catch (sendError) {
       reportError(sendError.message, "Message send failed.");
       updateStatus("Reply failed.", "error");
@@ -1197,31 +1292,45 @@ export default function App() {
     }
   };
 
-  const handleSpeak = async (messageId, text) => {
+  const handleSpeak = async (messageId, text, characterName, voice) => {
     setError("");
     releaseActiveAudio();
     setSpeakingId(messageId);
     setIsAudioLoading(true);
     setIsAudioPaused(false);
     updateStatus("Preparing spoken performance...", "speech");
+    const effectiveCharacter = characterName || character;
+    const effectiveVoice = voice || resolveVoiceForCharacter(effectiveCharacter);
+    let audioBlob;
     try {
-      const audioBlob = await apiPostBlob("/tts", {
+      audioBlob = await apiPostBlob("/tts", {
         text,
-        character,
-        voice: resolveVoiceForCharacter(character),
+        character: effectiveCharacter,
+        voice: effectiveVoice,
       });
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
-      activeAudioRef.current = audio;
-      activeAudioUrlRef.current = audioUrl;
+    } catch (ttsError) {
+      releaseActiveAudio();
+      clearPlaybackState();
+      reportError(ttsError.message, "Could not generate speech.");
+      setIsAudioLoading(false);
+      return;
+    }
 
+    const audioUrl = URL.createObjectURL(audioBlob);
+    const audio = new Audio(audioUrl);
+    activeAudioRef.current = audio;
+    activeAudioUrlRef.current = audioUrl;
+
+    return new Promise((resolve) => {
       audio.onended = () => {
         releaseActiveAudio();
         clearPlaybackState();
+        resolve();
       };
       audio.onerror = () => {
         releaseActiveAudio();
         clearPlaybackState();
+        resolve();
       };
       audio.onpause = () => {
         if (!audio.ended) {
@@ -1229,14 +1338,21 @@ export default function App() {
         }
       };
       audio.onplay = () => setIsAudioPaused(false);
-      await audio.play();
-      updateStatus("Thy line is now spoken aloud.", "speech");
-    } catch (ttsError) {
-      releaseActiveAudio();
-      clearPlaybackState();
-      reportError(ttsError.message, "Could not generate speech.");
-    }
-    setIsAudioLoading(false);
+
+      audio
+        .play()
+        .then(() => {
+          setIsAudioLoading(false);
+          updateStatus("Thy line is now spoken aloud.", "speech");
+        })
+        .catch((playError) => {
+          setIsAudioLoading(false);
+          releaseActiveAudio();
+          clearPlaybackState();
+          reportError(playError.message, "Could not play audio.");
+          resolve();
+        });
+    });
   };
 
   const handlePauseResume = async () => {
@@ -1486,6 +1602,32 @@ export default function App() {
                   >
                     Shakespeare Style:{" "}
                     {isShakespeareStyleEnabled ? "On" : "Off"}
+                  </button>
+                  <button
+                    className={`manuscript-button rounded-lg border px-3 py-2 text-sm font-semibold ${
+                      isAutoSpeakEnabled
+                        ? "seal-button border-maroon bg-maroon text-white"
+                        : "border-maroon bg-white text-maroon"
+                    }`}
+                    onClick={handleAutoSpeakToggle}
+                    type="button"
+                    aria-pressed={isAutoSpeakEnabled}
+                    disabled={isMultiRunning}
+                  >
+                    Auto-Speak: {isAutoSpeakEnabled ? "On" : "Off"}
+                  </button>
+                  <button
+                    className={`manuscript-button rounded-lg border px-3 py-2 text-sm font-semibold ${
+                      isRagEnabled
+                        ? "seal-button border-maroon bg-maroon text-white"
+                        : "border-maroon bg-white text-maroon"
+                    }`}
+                    onClick={handleRagToggle}
+                    type="button"
+                    aria-pressed={isRagEnabled}
+                    disabled={isMultiRunning}
+                  >
+                    Enable RAG: {isRagEnabled ? "On" : "Off"}
                   </button>
                   <button
                     className="manuscript-button rounded-lg border border-maroon bg-white px-3 py-2 text-sm font-semibold text-maroon"
@@ -1826,7 +1968,7 @@ export default function App() {
               Multi-model settings
             </summary>
 
-            <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_12rem_12rem]">
+            <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_12rem_12rem]">
               <div>
                 <span className="text-sm font-medium text-maroon">
                   Shakespeare Style
@@ -1843,6 +1985,44 @@ export default function App() {
                   disabled={isMultiRunning}
                 >
                   {isShakespeareStyleEnabled ? "On" : "Off"}
+                </button>
+              </div>
+
+              <div>
+                <span className="text-sm font-medium text-maroon">
+                  Auto-Speak
+                </span>
+                <button
+                  className={`manuscript-button mt-1 w-full rounded-lg border px-3 py-2 text-sm font-semibold ${
+                    isAutoSpeakEnabled
+                      ? "seal-button border-maroon bg-maroon text-white"
+                      : "border-maroon bg-white text-maroon"
+                  }`}
+                  onClick={handleAutoSpeakToggle}
+                  type="button"
+                  aria-pressed={isAutoSpeakEnabled}
+                  disabled={isMultiRunning}
+                >
+                  {isAutoSpeakEnabled ? "On" : "Off"}
+                </button>
+              </div>
+
+              <div>
+                <span className="text-sm font-medium text-maroon">
+                  Enable RAG
+                </span>
+                <button
+                  className={`manuscript-button mt-1 w-full rounded-lg border px-3 py-2 text-sm font-semibold ${
+                    isRagEnabled
+                      ? "seal-button border-maroon bg-maroon text-white"
+                      : "border-maroon bg-white text-maroon"
+                  }`}
+                  onClick={handleRagToggle}
+                  type="button"
+                  aria-pressed={isRagEnabled}
+                  disabled={isMultiRunning}
+                >
+                  {isRagEnabled ? "On" : "Off"}
                 </button>
               </div>
 
@@ -2027,12 +2207,14 @@ export default function App() {
                         </span>
                         <select
                           className="mt-1 w-full rounded-lg border border-maroon/30 bg-white px-3 py-2 text-base text-maroon"
-                          value={resolveVoiceForCharacter(participant.character)}
+                          value={
+                            participant.voice ||
+                            pickDefaultVoiceForSpeaker(index, voiceOptions)
+                          }
                           onChange={(event) =>
-                            handleCharacterVoiceChange(
-                              participant.character,
-                              event.target.value,
-                            )
+                            updateMultiParticipant(index, {
+                              voice: event.target.value,
+                            })
                           }
                           disabled={
                             isMultiRunning || voiceOptions.length === 0
@@ -2073,7 +2255,7 @@ export default function App() {
             )}
 
             {multiConversationPrompt && (
-              <div className="message-row mb-3 ml-auto flex max-w-[96%] flex-row-reverse items-start justify-end gap-2">
+              <div className="message-row mb-3 ml-auto flex w-full flex-row-reverse items-start justify-start gap-2">
                 <MessageAvatar type="user" />
                 <article className="chat-bubble user-bubble max-w-[92%] rounded-xl border border-maroon bg-maroon px-4 py-3 text-white">
                   <p className="whitespace-pre-wrap text-lg leading-relaxed">
@@ -2088,10 +2270,10 @@ export default function App() {
               return (
                 <div
                   key={`${turn.turn_number}-${turn.speaker_name}`}
-                  className={`message-row mb-3 flex max-w-[96%] items-start gap-2 ${
+                  className={`message-row mb-3 flex w-full items-start gap-2 ${
                     alignRight
-                      ? "ml-auto flex-row-reverse justify-end"
-                      : "mr-auto"
+                      ? "flex-row-reverse justify-start"
+                      : "justify-start"
                   }`}
                 >
                   <MessageAvatar />

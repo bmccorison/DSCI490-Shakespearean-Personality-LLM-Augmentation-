@@ -3,6 +3,42 @@
 import importlib
 import os
 import threading
+from pathlib import Path
+
+
+def _load_project_dotenv() -> None:
+    '''Load <repo>/.env into os.environ at import time, without third-party deps.
+
+    Only fills in keys that are not already in os.environ — values already set
+    in the shell or by the process manager take precedence.
+    '''
+    dotenv_path = Path(__file__).resolve().parent.parent / ".env"
+    if not dotenv_path.exists():
+        return
+
+    try:
+        contents = dotenv_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    for raw_line in contents.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        if not key or key in os.environ:
+            continue
+        value = value.strip()
+        # Strip a single matching pair of surrounding quotes.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+_load_project_dotenv()
 
 
 DEFAULT_VOICE_ID = "KjWPwHJWLungxeiYigoM"
