@@ -1,9 +1,11 @@
 ''' Handle fastapi endpoints for the front-end interface. '''
 
 import os
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -362,6 +364,11 @@ def generate_tts(text: str, character: str = "Hamlet", voice: str | None = None)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     return Response(content=audio_bytes, media_type=media_type)
+
+
+FRONTEND_DIST = Path(__file__).resolve().parent / "interface" / "dist"
+if FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 
 
 if __name__ == "__main__":
