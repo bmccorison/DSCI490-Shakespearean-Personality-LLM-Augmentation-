@@ -7,6 +7,7 @@ top-k most semantically similar passages as a single string for LLM grounding.
 '''
 
 import json
+import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,10 @@ DEFAULT_SPEAKER_CONTEXT = REPO_ROOT / "data" / "hamlet_speaker_aware_context.jso
 
 _EMBEDDING_MODEL = 'all-MiniLM-L6-v2'
 _TOP_K = 3
+_TRANSFORMERS_LOAD_REPORT_LOGGERS = (
+    "transformers.modeling_utils",
+    "transformers.utils.loading_report",
+)
 
 # Lazy-initialized so importing this module does not block server startup while the sentence-transformer weights are downloaded or loaded from disk.
 _model: SentenceTransformer | None = None
@@ -30,6 +35,25 @@ _model_lock = threading.Lock()
 # Keyed by (profile_path, context_path) so swapping characters rebuilds the store rather than returning stale embeddings for the wrong character.
 _vs_cache: dict[tuple[str, str], "VectorStore"] = {}
 _vs_lock = threading.Lock()
+
+
+def _load_embedding_model(device: str) -> SentenceTransformer:
+    '''Load the embedding model while suppressing harmless Transformers load reports.'''
+    load_report_loggers = [
+        logging.getLogger(logger_name)
+        for logger_name in _TRANSFORMERS_LOAD_REPORT_LOGGERS
+    ]
+    previous_levels = [
+        (load_report_logger, load_report_logger.level)
+        for load_report_logger in load_report_loggers
+    ]
+    for load_report_logger in load_report_loggers:
+        load_report_logger.setLevel(logging.ERROR)
+    try:
+        return SentenceTransformer(_EMBEDDING_MODEL, device=device)
+    finally:
+        for load_report_logger, previous_level in previous_levels:
+            load_report_logger.setLevel(previous_level)
 
 
 def _get_model() -> SentenceTransformer:
@@ -43,7 +67,7 @@ def _get_model() -> SentenceTransformer:
                     device = "cuda" if getattr(torch, "cuda", None) is not None and torch.cuda.is_available() else "cpu"
                 except Exception:
                     device = "cpu"
-                _model = SentenceTransformer(_EMBEDDING_MODEL, device=device)
+                _model = _load_embedding_model(device)
     return _model
 
 

@@ -111,6 +111,7 @@ class MultiModelConversation:
         max_turns: int = DEFAULT_MAX_TURNS,
         shakespeare_style: bool = False,
         context_turns: int = DEFAULT_CONTEXT_TURNS,
+        rag_context: str = "",
     ) -> None:
         self.session_id = uuid4().hex
         self.participants = self._validate_participants(participants)
@@ -121,6 +122,7 @@ class MultiModelConversation:
         self.max_turns = validate_max_turns(max_turns)
         self.shakespeare_style = bool(shakespeare_style)
         self.context_turns = max(1, int(context_turns))
+        self.rag_context = rag_context.strip() if isinstance(rag_context, str) else ""
         self.turns: list[MultiModelTurn] = []
         self.is_stopped = False
         # Lazy: only create the on-disk logger once the first turn is generated, so
@@ -296,9 +298,15 @@ class MultiModelConversation:
             f"{speaker.name} as {speaker.character} from {speaker.work}"
             for speaker in self.participants
         )
+        context_block = (
+            f"Reference passages:\n{self.rag_context}\n\n"
+            if self.rag_context
+            else ""
+        )
         return (
             f"Initial prompt: {self.initial_prompt}\n\n"
             f"Participants: {participant_summary}\n\n"
+            f"{context_block}"
             f"Conversation so far:\n{transcript}\n\n"
             f"It is now {participant.name}'s turn. Respond only with "
             f"{participant.character}'s next line."

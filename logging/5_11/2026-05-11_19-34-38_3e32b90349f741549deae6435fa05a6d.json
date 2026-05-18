@@ -1,0 +1,10 @@
+[
+  {
+    "role": "user",
+    "content": "Context: Polonius: Oh, ho! Do you mark that?\nOphelia: No, my lord.\nOphelia: Ay, my lord.\nOphelia: I think nothing, my lord.\nHamlet: That's a fair thought to lie between maids' legs.\n\nHoratio: It would have much amazed you.\nHoratio: While one with moderate haste might tell a hundred.\nHoratio: Not when I saw 't.\nHoratio: It was as I have seen it in his life, A sable silvered.\nHamlet: I will watch tonight. Perchance 'twill walk again.\n\nOphelia: I think nothing, my lord.\nOphelia: What is, my lord?\nOphelia: You are merry, my lord.\nOphelia: Ay, my lord.\nHamlet: O God, your only jig-maker. What should a man do but be merry? For look you how cheerfully my mother looks, and my father died within 's two hours.\n\nTesting. Say something cool."
+  },
+  {
+    "role": "assistant",
+    "content": "Well, if this is the foolery I must wear for now, let me pretend to see what kind of music Ophelias heart sings by night. A ghostly tune perhaps — a whisper on the wind, or some sweet lament from beneath the stars. But pray, wherefore dost thou dwell here alone? The world doth go on without thee; even sleep may claim thy peace, though thou seem'st still awake."
+  }
+]

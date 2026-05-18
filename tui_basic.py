@@ -1,23 +1,23 @@
-"""Basic numbered CLI for loading a model + adapter and chatting."""
+"""Basic numbered CLI mirroring the web demo's chat flow.
+
+Loads a model + adapter via the same hot-swap machinery the FastAPI backend uses,
+applies the adapter's character metadata, retrieves RAG context per turn, and
+exposes runtime commands that mirror toggles available in `interface/src/App.jsx`.
+"""
 
 from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 from typing import Any
-
-from models.models import model_list
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-BASE_MODEL_ADAPTER_PATH = "__base__"
-DEFAULT_CHARACTER = "Hamlet"
-DEFAULT_WORK = "Hamlet"
-REPO_ROOT = Path(__file__).resolve().parent
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
 HELP_COMMANDS = {"help", "/help"}
 RESET_COMMANDS = {"reset", "/reset"}
+STYLE_COMMANDS = {"style", "/style"}
+CHARACTER_COMMAND_PREFIXES = ("/character", "character ")
 
 
 class HelpFormatter(
@@ -25,104 +25,6 @@ class HelpFormatter(
     argparse.RawDescriptionHelpFormatter,
 ):
     """Parser help formatter that preserves dynamic numbering blocks."""
-
-
-def _configured_adapters(configured_model: dict[str, Any]) -> list[dict[str, str]]:
-    """Normalize adapters from the current config shape and the legacy fallback."""
-    adapters = configured_model.get("adapters")
-    if isinstance(adapters, list):
-        return [
-            adapter
-            for adapter in adapters
-            if isinstance(adapter, dict)
-        ]
-
-    legacy_adapters = configured_model.get("adapter_paths")
-    if not isinstance(legacy_adapters, list):
-        return []
-
-    normalized_adapters: list[dict[str, str]] = []
-    for adapter in legacy_adapters:
-        if not isinstance(adapter, dict):
-            continue
-
-        description = str(adapter.get("description", ""))
-        adapter_fields = [
-            (key, value)
-            for key, value in adapter.items()
-            if key != "description" and isinstance(value, str)
-        ]
-        if not adapter_fields:
-            continue
-
-        adapter_name, adapter_path = adapter_fields[0]
-        normalized_adapters.append(
-            {
-                "name": adapter_name,
-                "path": adapter_path,
-                "description": description,
-            }
-        )
-
-    return normalized_adapters
-
-
-def _resolve_adapter_path(adapter_path: str) -> Path:
-    """Resolve adapter paths relative to the repository root when needed."""
-    resolved_path = Path(adapter_path)
-    if not resolved_path.is_absolute():
-        resolved_path = REPO_ROOT / resolved_path
-    return resolved_path
-
-
-def _is_base_adapter(adapter_path: str) -> bool:
-    """Return whether the adapter token means 'use the base model only'."""
-    return adapter_path.strip() == BASE_MODEL_ADAPTER_PATH
-
-
-def available_models() -> list[dict[str, Any]]:
-    """Return loadable models and adapters using the repo's configured metadata."""
-    models: list[dict[str, Any]] = []
-
-    for configured_model in model_list():
-        adapters: list[dict[str, str]] = []
-        for adapter in _configured_adapters(configured_model):
-            adapter_path = str(adapter.get("path", "")).strip()
-            if not adapter_path:
-                continue
-
-            if _is_base_adapter(adapter_path) or _resolve_adapter_path(adapter_path).exists():
-                adapters.append(
-                    {
-                        "name": str(adapter.get("name", adapter_path)),
-                        "path": adapter_path,
-                        "description": str(adapter.get("description", "")),
-                    }
-                )
-
-        if not adapters:
-            adapters.append(
-                {
-                    "name": "base_model",
-                    "path": BASE_MODEL_ADAPTER_PATH,
-                    "description": "Base model without a LoRA adapter.",
-                }
-            )
-
-        default_adapter_path = str(configured_model.get("default_adapter_path", "")).strip()
-        if default_adapter_path not in {adapter["path"] for adapter in adapters}:
-            default_adapter_path = adapters[0]["path"]
-
-        models.append(
-            {
-                "name": str(configured_model["name"]),
-                "description": str(configured_model.get("description", "")),
-                "default_adapter_path": default_adapter_path,
-                "adapters": adapters,
-            }
-        )
-
-    return models
 
 
 def _default_adapter_index(model_info: dict[str, Any]) -> int:
@@ -149,7 +51,7 @@ def _build_help_epilog(models: list[dict[str, Any]]) -> str:
 
     for model_index, model_info in enumerate(models, start=1):
         lines.append(f"  {model_index}. {model_info['name']}")
-        if model_info["description"]:
+        if model_info.get("description"):
             lines.append(f"     {model_info['description']}")
 
         default_adapter_index = _default_adapter_index(model_info)
@@ -159,7 +61,7 @@ def _build_help_epilog(models: list[dict[str, Any]]) -> str:
             lines.append(
                 f"       {adapter_index}. {adapter['name']} -> {adapter['path']}{suffix}"
             )
-            if adapter["description"]:
+            if adapter.get("description"):
                 lines.append(f"          {adapter['description']}")
 
     return "\n".join(lines)
@@ -168,7 +70,7 @@ def _build_help_epilog(models: list[dict[str, Any]]) -> str:
 def build_parser(models: list[dict[str, Any]]) -> argparse.ArgumentParser:
     """Build the CLI parser with a dynamic numbered help block."""
     parser = argparse.ArgumentParser(
-        description="Very small CLI chat prompt for the configured Shakespeare models.",
+        description="Basic CLI chat prompt for the configured Shakespeare models.",
         epilog=_build_help_epilog(models),
         formatter_class=HelpFormatter,
     )
@@ -190,7 +92,12 @@ def build_parser(models: list[dict[str, Any]]) -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-style",
         action="store_true",
-        help="Disable the lightweight Shakespearean wording post-processing.",
+        help="Start with the Shakespearean wording post-processing disabled. Toggle later with /style.",
+    )
+    parser.add_argument(
+        "--no-rag",
+        action="store_true",
+        help="Disable RAG context retrieval per turn (matches the web flag-less generate path).",
     )
     return parser
 
@@ -223,20 +130,46 @@ def _resolve_adapter_choice(
     return adapter_number, adapters[adapter_number - 1]
 
 
-def _print_runtime_help() -> None:
-    """Show the tiny set of prompt-time commands."""
-    print("Commands: /help, /reset, /quit")
+def _print_runtime_help(state: dict[str, Any]) -> None:
+    """Show the prompt-time commands and current toggle state."""
+    print("Commands: /help, /reset, /style, /character <name>, /quit")
+    print(
+        f"  style: {'on' if state['apply_shakespeare_style'] else 'off'} | "
+        f"rag: {'on' if state['rag_enabled'] else 'off'} | "
+        f"character: {state['character']} ({state['work']})"
+    )
+
+
+def _handle_character_command(user_message: str, state: dict[str, Any]) -> bool:
+    """Handle `/character <name>` and `character <name>`; return True if consumed."""
+    for prefix in CHARACTER_COMMAND_PREFIXES:
+        if user_message.lower().startswith(prefix):
+            new_character = user_message[len(prefix):].strip()
+            if not new_character:
+                print(f"Current character: {state['character']} ({state['work']})")
+                return True
+            from pipeline import lm_generation
+
+            try:
+                lm_generation.set_character_context(new_character, state["work"])
+            except ValueError as exc:
+                print(f"error> {exc}")
+                return True
+            state["character"] = new_character
+            lm_generation.refresh_chat_history()
+            print(f"Character set to {new_character}. Chat history reset.")
+            return True
+    return False
 
 
 def run_prompt(
     generation_pipeline,
     tokenizer,
     model,
-    *,
-    apply_shakespeare_style: bool,
+    state: dict[str, Any],
 ) -> None:
     """Run the plain stdin/stdout chat loop."""
-    _print_runtime_help()
+    _print_runtime_help(state)
 
     while True:
         try:
@@ -255,20 +188,37 @@ def run_prompt(
         if normalized_command in EXIT_COMMANDS:
             return
         if normalized_command in HELP_COMMANDS:
-            _print_runtime_help()
+            _print_runtime_help(state)
             continue
         if normalized_command in RESET_COMMANDS:
             generation_pipeline.refresh_chat_history()
             print("Chat history reset.")
             continue
+        if normalized_command in STYLE_COMMANDS:
+            state["apply_shakespeare_style"] = not state["apply_shakespeare_style"]
+            print(
+                f"Shakespeare style {'enabled' if state['apply_shakespeare_style'] else 'disabled'}."
+            )
+            continue
+        if _handle_character_command(user_message, state):
+            continue
+
+        context = None
+        if state["rag_enabled"]:
+            from pipeline.rag import get_context
+
+            try:
+                context = get_context(user_message)
+            except Exception as exc:
+                print(f"warn> RAG context unavailable: {exc}")
 
         try:
             response = generation_pipeline.generate_output(
                 user_message,
                 tokenizer,
                 model,
-                context=None,
-                apply_shakespeare_style=apply_shakespeare_style,
+                context=context,
+                apply_shakespeare_style=state["apply_shakespeare_style"],
             )
         except KeyboardInterrupt:
             print("\nGeneration interrupted.")
@@ -277,12 +227,15 @@ def run_prompt(
             print(f"error> {exc}")
             continue
 
-        print(f"{DEFAULT_CHARACTER.lower()}> {response}")
+        print(f"{state['character'].lower()}> {response}")
 
 
 def main() -> None:
     """Parse CLI flags, load the chosen model, then start the basic chat prompt."""
-    models = available_models()
+    from pipeline import lm_generation
+    from pipeline.utils import ensure_loaded_model
+
+    models = lm_generation.model_selection()
     parser = build_parser(models)
     args = parser.parse_args()
 
@@ -292,30 +245,38 @@ def main() -> None:
     selected_model = _resolve_model_choice(parser, models, args.model)
     adapter_number, selected_adapter = _resolve_adapter_choice(parser, selected_model, args.adapter)
 
-    from pipeline import lm_generation
+    character = str(
+        selected_adapter.get("character")
+        or selected_model.get("character")
+        or "Hamlet"
+    ).strip()
+    work = str(
+        selected_adapter.get("work")
+        or selected_model.get("work")
+        or "Hamlet"
+    ).strip()
+    lm_generation.set_character_context(character, work)
 
-    lm_generation.set_character_context(DEFAULT_CHARACTER, DEFAULT_WORK)
-
-    print(
-        f"Loading model #{args.model}: {selected_model['name']}"
-    )
+    print(f"Loading model #{args.model}: {selected_model['name']}")
     print(
         f"Using adapter #{adapter_number}: {selected_adapter['name']} ({selected_adapter['path']})"
     )
+    print(f"Character: {character} ({work})")
     print("Model loading can take a while on first use.")
 
-    model, tokenizer = lm_generation.get_model(
+    model, tokenizer = ensure_loaded_model(
         selected_model["name"],
         selected_adapter["path"],
     )
 
     print("Model loaded. Start chatting.")
-    run_prompt(
-        lm_generation,
-        tokenizer,
-        model,
-        apply_shakespeare_style=not args.no_style,
-    )
+    state: dict[str, Any] = {
+        "apply_shakespeare_style": not args.no_style,
+        "rag_enabled": not args.no_rag,
+        "character": character,
+        "work": work,
+    }
+    run_prompt(lm_generation, tokenizer, model, state)
 
 
 if __name__ == "__main__":

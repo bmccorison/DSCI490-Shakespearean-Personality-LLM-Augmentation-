@@ -4,12 +4,20 @@ import gc
 import json
 import os
 import re
+import warnings
 from pathlib import Path
 _current_message_index: int = 0
 
 # Prefer the expandable allocator unless the caller already configured one.
 if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ and "PYTORCH_ALLOC_CONF" not in os.environ:
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"_check_is_size will be removed in a future PyTorch release.*",
+    category=FutureWarning,
+    module=r"bitsandbytes\.backends\.cuda\.ops",
+)
 
 import torch
 from peft import PeftModel
@@ -132,7 +140,6 @@ def get_chat_template(tokenizer, usr_msg=None, context=None):
     return tokenizer(prompt, return_tensors="pt")
     
 
-# TODO refactor this to make it better (and support multiple conversations/users)
 def get_system_prompt() -> str:
     ''' Returns the system prompt for the conversation. '''
     return (
@@ -656,6 +663,35 @@ def _configured_adapters(configured_model: dict) -> list[dict]:
     return normalized_adapters
 
 
+def _metadata_text(source: dict, key: str, fallback: str = "") -> str:
+    '''Return a stripped string metadata value with a fallback.'''
+    value = source.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return fallback
+
+
+def _adapter_selection_entry(
+    configured_model: dict,
+    adapter: dict,
+    adapter_path: str,
+) -> dict[str, str]:
+    '''Build the frontend/API adapter entry, including persona metadata.'''
+    model_character = _metadata_text(
+        configured_model,
+        "character",
+        DEFAULT_CHARACTER,
+    )
+    model_work = _metadata_text(configured_model, "work", DEFAULT_WORK)
+    return {
+        "name": _metadata_text(adapter, "name", adapter_path),
+        "path": adapter_path,
+        "description": _metadata_text(adapter, "description"),
+        "character": _metadata_text(adapter, "character", model_character),
+        "work": _metadata_text(adapter, "work", model_work),
+    }
+
+
 def _is_base_model_adapter(adapter_path: str) -> bool:
     '''Return whether the selected adapter path refers to the raw base model.'''
     return adapter_path.strip() == BASE_MODEL_ADAPTER_PATH
@@ -705,6 +741,8 @@ def _base_model_adapter_entry(configured_model: dict) -> dict[str, str]:
             "base_description",
             "Base model without a LoRA adapter.",
         ),
+        "character": _metadata_text(configured_model, "character", DEFAULT_CHARACTER),
+        "work": _metadata_text(configured_model, "work", DEFAULT_WORK),
     }
 
 
@@ -723,11 +761,7 @@ def model_selection():
             if _is_base_model_adapter(adapter_path):
                 # Always expose synthetic base adapter token as loadable.
                 adapters.append(
-                    {
-                        "name": adapter.get("name", adapter_path),
-                        "path": adapter_path,
-                        "description": adapter.get("description", ""),
-                    }
+                    _adapter_selection_entry(configured_model, adapter, adapter_path)
                 )
                 continue
 
@@ -740,11 +774,7 @@ def model_selection():
                 continue
 
             adapters.append(
-                {
-                    "name": adapter.get("name", adapter_path),
-                    "path": adapter_path,
-                    "description": adapter.get("description", ""),
-                }
+                _adapter_selection_entry(configured_model, adapter, adapter_path)
             )
 
         if not adapters:
@@ -762,6 +792,12 @@ def model_selection():
                 {
                     "name": configured_model["name"],
                     "description": configured_model.get("description", ""),
+                    "character": _metadata_text(
+                        configured_model,
+                        "character",
+                        DEFAULT_CHARACTER,
+                    ),
+                    "work": _metadata_text(configured_model, "work", DEFAULT_WORK),
                     "default_adapter_path": default_adapter_path,
                     "adapters": adapters,
                 }

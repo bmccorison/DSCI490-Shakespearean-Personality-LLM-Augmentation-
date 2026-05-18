@@ -11,7 +11,8 @@ This project aims to develop and evaluate methods for persona-consistent AI, tes
 - `misc/`: random scripts and notebooks for tests, such as response-generation and model-size testing.
 - `models/`: saved LoRA adapter checkpoints and fine-tuned model artifacts.
 - `pipeline/`: reusable internal pipeline library modules (ingestion, RAG, and generation).
-- `testing/`: project tests, including multimodel unit tests and integration-style translator checks.
+- `tests/`: pytest suite, run via `bash run_tests.sh`.
+- `testing/`: standalone integration-style scripts (e.g. translator checks) that are not part of the pytest suite.
 - `training/`: training notebooks and logs for LoRA fine-tuning runs.
 - `uv_config/`: optional `uv` project configuration and lockfile for dependency-managed runs.
 - `requirements.txt`: Python dependency list for the project environment.
