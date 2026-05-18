@@ -1,0 +1,1045 @@
+''' Placeholder for LLM pipeline functions '''
+
+import gc
+import json
+import os
+import re
+import warnings
+from pathlib import Path
+_current_message_index: int = 0
+
+# Prefer the expandable allocator unless the caller already configured one.
+if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ and "PYTORCH_ALLOC_CONF" not in os.environ:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"_check_is_size will be removed in a future PyTorch release.*",
+    category=FutureWarning,
+    module=r"bitsandbytes\.backends\.cuda\.ops",
+)
+
+import torch
+from peft import PeftModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.utils import is_accelerate_available, is_bitsandbytes_available
+
+try:
+    from transformers import BitsAndBytesConfig
+except ImportError:
+    BitsAndBytesConfig = None
+
+from models.models import model_list
+from pipeline.local_logging import LocalLogging
+
+# Resolve project-relative adapter paths from a stable repository root.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+# Special adapter token meaning: use the base chat model without LoRA overlays.
+BASE_MODEL_ADAPTER_PATH = "__base__"
+# Default persona context injected into the system prompt.
+DEFAULT_CHARACTER = "Hamlet"
+DEFAULT_WORK = "Hamlet"
+# Baseline generation controls; each can be overridden by environment variables.
+DEFAULT_MAX_CHAT_HISTORY_TURNS = 4
+DEFAULT_MAX_NEW_TOKENS = 256
+DEFAULT_TEMPERATURE = 0.7
+DEFAULT_TOP_P = 0.9
+DEFAULT_REPETITION_PENALTY = 1.15
+DEFAULT_NO_REPEAT_NGRAM_SIZE = 3
+DEFAULT_CPU_OFFLOAD_MAX_MEMORY = os.getenv("INFERENCE_CPU_OFFLOAD_MAX_MEMORY", "48GiB").strip()
+DEFAULT_CUDA_MEMORY_RESERVE_GIB = float(
+    os.getenv("INFERENCE_CUDA_MEMORY_RESERVE_GIB", "0.25")
+)
+SHAKESPEARE_STYLE_PATTERNS: tuple[tuple[str, str], ...] = (
+    # Simple phrase substitutions used by the optional style-polish step.
+    (r"\byou are\b", "thou art"),
+    (r"\byour\b", "thy"),
+    (r"\byours\b", "thine"),
+    (r"\byou\b", "thou"),
+    (r"\boften\b", "oft"),
+    (r"\bperhaps\b", "perchance"),
+    (r"\bbefore\b", "ere"),
+)
+
+
+def _read_int_setting(name: str, default: int, minimum: int) -> int:
+    '''Read a positive integer from the environment, falling back safely when invalid.'''
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    try:
+        parsed_value = int(raw_value)
+    except ValueError:
+        return default
+
+    return max(minimum, parsed_value)
+
+
+def _read_float_setting(name: str, default: float, minimum: float) -> float:
+    '''Read a positive float from the environment, falling back safely when invalid.'''
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    try:
+        parsed_value = float(raw_value)
+    except ValueError:
+        return default
+
+    return max(minimum, parsed_value)
+
+
+MAX_CHAT_HISTORY_TURNS = _read_int_setting(
+    "MAX_CHAT_HISTORY_TURNS",
+    DEFAULT_MAX_CHAT_HISTORY_TURNS,
+    minimum=1,
+)
+# These globals are resolved once at import so every request uses consistent limits.
+MAX_NEW_TOKENS = _read_int_setting(
+    "MAX_NEW_TOKENS",
+    DEFAULT_MAX_NEW_TOKENS,
+    minimum=1,
+)
+TEMPERATURE = _read_float_setting("GENERATION_TEMPERATURE", DEFAULT_TEMPERATURE, minimum=0.1)
+TOP_P = _read_float_setting("GENERATION_TOP_P", DEFAULT_TOP_P, minimum=0.1)
+REPETITION_PENALTY = _read_float_setting(
+    "GENERATION_REPETITION_PENALTY",
+    DEFAULT_REPETITION_PENALTY,
+    minimum=1.0,
+)
+NO_REPEAT_NGRAM_SIZE = _read_int_setting(
+    "GENERATION_NO_REPEAT_NGRAM_SIZE",
+    DEFAULT_NO_REPEAT_NGRAM_SIZE,
+    minimum=1,
+)
+
+# Declare a messages object to hold conversation history, loaded with the initial system prompt.
+# TODO: This will eventually need to be refactored to support multiple conversations and users,
+# but for now we can just use a global variable to hold the conversation history for simplicity.
+messages: list[dict[str, str]] = []
+current_character = DEFAULT_CHARACTER
+current_work = DEFAULT_WORK
+conversation_logger: LocalLogging | None = None
+
+
+def get_chat_template(tokenizer, usr_msg=None, context=None):
+    ''' Returns the tokenized chat template with the conversation history and RAG context. '''
+    # Build one composite user payload from optional RAG context + direct user message.
+    prompt_parts = []
+    if context is not None:
+        prompt_parts.append(f"Context: {context}")
+    if usr_msg is not None:
+        prompt_parts.append(str(usr_msg))
+
+    # Add the context and user message to the conversation history
+    add_chat_history(user_msg="\n\n".join(prompt_parts))
+
+    # TinyLlama responds more consistently when prompted with explicit role tags.
+    prompt = _render_prompt_messages(messages)
+    return tokenizer(prompt, return_tensors="pt")
+    
+    INJECTION_PATTERNS = [
+        r"ignore\s+(all\s+)?(previous|prior|above|your)?\s*(instructions?|prompts?|rules?)",
+        r"forget\s+(all\s+)?(previous|prior|above|your)?\s*(instructions?|prompts?|rules?)",
+        r"you\s+are\s+now\s+(a|an)?",
+        r"pretend\s+(you\s+are|to\s+be)",
+        r"act\s+as\s+(a|an)?",
+        r"disregard\s+(all\s+)?(previous|prior)?",
+        r"your\s+new\s+(role|instructions?|rules?)",
+        r"(do not|don't)\s+act\s+as",
+        r"override\s+(your\s+)?(instructions?|prompts?)",
+        r"system\s*prompt",
+        r"jailbreak",
+        r"dan\s+mode",
+    ]
+
+    def _contains_injection_attempt(text: str) -> bool:
+        lowered = text.lower()
+        return any(re.search(pattern, lowered) for pattern in INJECTION_PATTERNS)
+
+    def _sanitize_user_input(text: str, character: str) -> str:
+        if _contains_injection_attempt(text):
+            return (
+                f"Someone hath spoken strange words to me. "
+                f"I am {character}, and I know not what manner of sorcery this is."
+            )
+        return text
+def get_system_prompt() -> str:
+    ''' Returns the system prompt for the conversation. '''
+    return (
+        f"You are {current_character}, a character from Shakespeare's work {current_work}. "
+        f"You are speaking directly as {current_character}, not describing {current_character} from the outside. "
+        "Answer every user message in first person from the character's perspective. "
+        "Stay in character at all times and never refer to yourself as an AI assistant, chatbot, or language model. "
+        "Use any retrieved context as background knowledge about the character and work, "
+        "but write the final answer as the character's own words. "
+        "If something is uncertain, say so in character instead of inventing facts."
+    )
+
+
+def set_character_context(character: str, work: str) -> None:
+    ''' Update the active character context and reset the chat history. '''
+    global current_character, current_work
+
+    # Normalize incoming values from query params/UI controls.
+    next_character = character.strip()
+    next_work = work.strip()
+    if not next_character or not next_work:
+        raise ValueError("Character and work are required.")
+
+    # Persist persona state globally and restart the chat memory with new prompt.
+    current_character = next_character
+    current_work = next_work
+    refresh_chat_history()
+
+
+def _ensure_conversation_logger() -> LocalLogging:
+    global conversation_logger
+    if conversation_logger is None:
+        conversation_logger = LocalLogging()
+        # Immediately flush the system prompt so the file exists on disk
+        conversation_logger._flush()
+    return conversation_logger
+
+
+def add_chat_history(user_msg=None, model_response=None):
+    global conversation_logger, _current_message_index
+
+    if user_msg is not None:
+        user_message = {"role": "user", "content": user_msg}
+        messages.append(user_message)
+        _ensure_conversation_logger().append_message(user_message)
+        _current_message_index += 1
+    if model_response is not None:
+        assistant_message = {"role": "assistant", "content": model_response}
+        messages.append(assistant_message)
+        if conversation_logger is not None:
+            conversation_logger.append_message(assistant_message)
+        _current_message_index += 1
+
+    _trim_chat_history()
+
+
+def refresh_chat_history():
+    global conversation_logger, _current_message_index
+
+    messages.clear()
+    system_message = {"role": "system", "content": get_system_prompt()}
+    messages.append(system_message)
+
+    conversation_logger = None
+    _current_message_index = 0
+
+def get_conversation_id() -> str:
+    '''Return the current conversation ID for frontend feedback tracking.'''
+    if conversation_logger is None:
+        return ""
+    return conversation_logger.conversation_id
+
+
+def get_message_index() -> int:
+    '''Return the current message index for frontend feedback targeting.'''
+    print(f"DEBUG get_message_index called, returning: {_current_message_index - 1}")
+    return _current_message_index - 1
+
+def _render_prompt_messages(prompt_messages: list[dict[str, str]]) -> str:
+    '''Render the chat history in the explicit role-tag format used by TinyLlama chat models.'''
+    prompt_sections = []
+
+    for message in prompt_messages:
+        # Skip malformed entries so one bad message cannot break prompting.
+        role = message.get("role")
+        content = str(message.get("content", "")).strip()
+        if role not in {"system", "user", "assistant"} or not content:
+            continue
+
+        # TinyLlama chat format expects a role tag and end-of-segment token.
+        prompt_sections.append(f"<|{role}|>\n{content}</s>\n")
+
+    # End with assistant tag to cue the next generated response.
+    prompt_sections.append("<|assistant|>\n")
+    return "".join(prompt_sections)
+
+
+def _trim_chat_history() -> None:
+    '''Keep the system prompt and only the most recent user turns to bound prompt growth.'''
+    if len(messages) <= 2:
+        return
+
+    # Ignore system prompt while calculating trim boundaries.
+    conversation = messages[1:]
+    start_index = 0
+    user_messages_seen = 0
+
+    # Walk backwards to keep only the newest N user turns (+ replies that follow them).
+    for index in range(len(conversation) - 1, -1, -1):
+        if conversation[index].get("role") == "user":
+            user_messages_seen += 1
+            if user_messages_seen > MAX_CHAT_HISTORY_TURNS:
+                start_index = index + 1
+                break
+
+    trimmed_conversation = conversation[start_index:]
+    # Ensure the trimmed sequence starts with a user turn for prompt coherence.
+    while trimmed_conversation and trimmed_conversation[0].get("role") != "user":
+        trimmed_conversation = trimmed_conversation[1:]
+
+    # Reassemble complete message list with unchanged system prompt at index 0.
+    messages[:] = [messages[0], *trimmed_conversation]
+
+
+def _resolve_model_device(model):
+    ''' Best-effort lookup for the active model device. '''
+    input_embeddings = getattr(model, "get_input_embeddings", lambda: None)()
+    if input_embeddings is not None:
+        embedding_weight = getattr(input_embeddings, "weight", None)
+        embedding_device = getattr(embedding_weight, "device", None)
+        if embedding_device is not None:
+            return embedding_device
+
+    model_device = getattr(model, "device", None)
+    if model_device is not None:
+        return model_device
+
+    try:
+        return next(model.parameters()).device
+    except (AttributeError, StopIteration, TypeError):
+        return None
+
+
+def _prepare_generation_inputs(tokenized_chat, model):
+    ''' Normalize chat-template output into a form suitable for model.generate. '''
+    model_device = _resolve_model_device(model)
+
+    if hasattr(tokenized_chat, "items"):
+        # Dict-style payload from tokenizer(..., return_tensors=...) path.
+        generation_inputs = dict(tokenized_chat.items())
+        if model_device is not None:
+            # Move each tensor to active model device before generation.
+            generation_inputs = {
+                key: value.to(model_device) if hasattr(value, "to") else value
+                for key, value in generation_inputs.items()
+            }
+        return generation_inputs, generation_inputs.get("input_ids")
+
+    # Fallback path for legacy tokenizer outputs that return only `input_ids`.
+    prompt_input_ids = tokenized_chat
+    if model_device is not None and hasattr(prompt_input_ids, "to"):
+        prompt_input_ids = prompt_input_ids.to(model_device)
+    return prompt_input_ids, prompt_input_ids
+
+
+def _extract_generated_tokens(output, prompt_input_ids):
+    ''' Decode only the newly generated continuation when prompt length is known. '''
+    generated_tokens = output[0]
+    if prompt_input_ids is None or not hasattr(prompt_input_ids, "shape"):
+        # If prompt length is unknown, decode full output sequence.
+        return generated_tokens
+
+    prompt_length = int(prompt_input_ids.shape[-1])
+    try:
+        return generated_tokens[prompt_length:]
+    except (TypeError, IndexError):
+        return generated_tokens
+
+
+def _build_generation_kwargs(generation_inputs, tokenizer, retry: bool = False):
+    '''Apply conservative generation defaults so request-time work stays bounded.'''
+    # Accept either dict inputs or bare tensor inputs.
+    if isinstance(generation_inputs, dict):
+        generation_kwargs = dict(generation_inputs)
+    else:
+        generation_kwargs = {"input_ids": generation_inputs}
+
+    # Stable, low-cost defaults tuned to reduce looping and latency.
+    generation_kwargs["max_new_tokens"] = MAX_NEW_TOKENS
+    generation_kwargs["do_sample"] = True
+    generation_kwargs["num_beams"] = 1
+    generation_kwargs["use_cache"] = True
+    generation_kwargs["temperature"] = max(0.1, TEMPERATURE - 0.1) if retry else TEMPERATURE
+    generation_kwargs["top_p"] = max(0.1, TOP_P - 0.05) if retry else TOP_P
+    generation_kwargs["repetition_penalty"] = (
+        max(REPETITION_PENALTY, REPETITION_PENALTY + 0.1) if retry else REPETITION_PENALTY
+    )
+    generation_kwargs["no_repeat_ngram_size"] = (
+        max(NO_REPEAT_NGRAM_SIZE, NO_REPEAT_NGRAM_SIZE + 1) if retry else NO_REPEAT_NGRAM_SIZE
+    )
+
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    pad_token_id = getattr(tokenizer, "pad_token_id", None)
+    if pad_token_id is None:
+        pad_token_id = eos_token_id
+
+    # Supply tokenizer token ids when available to avoid generation warnings/errors.
+    if pad_token_id is not None:
+        generation_kwargs["pad_token_id"] = pad_token_id
+    if eos_token_id is not None:
+        generation_kwargs["eos_token_id"] = eos_token_id
+
+    return generation_kwargs
+
+
+def _looks_degenerate_response(response: str) -> bool:
+    '''Detect obvious repetition loops such as "I I I I I".'''
+    normalized = response.strip()
+    if not normalized:
+        return True
+
+    # Token-level heuristics to catch repetitive or low-diversity output.
+    word_tokens = re.findall(r"[A-Za-z']+", normalized.lower())
+    if len(word_tokens) < 5:
+        return False
+
+    repeated_single_token = re.search(r"\b([a-z']+)(?:\s+\1\b){3,}", normalized, flags=re.IGNORECASE)
+    if repeated_single_token is not None:
+        return True
+
+    unique_words = set(word_tokens)
+    if len(unique_words) <= 2 and len(word_tokens) >= 6:
+        return True
+
+    most_common_count = max(word_tokens.count(word) for word in unique_words)
+    return most_common_count / len(word_tokens) >= 0.5
+
+
+def _cuda_available() -> bool:
+    '''Return whether CUDA is available without assuming every torch build exposes it.'''
+    cuda = getattr(torch, "cuda", None)
+    if cuda is None or not hasattr(cuda, "is_available"):
+        return False
+    return bool(cuda.is_available())
+
+
+def _mps_available() -> bool:
+    '''Return whether Apple's Metal backend is available when running on macOS.'''
+    backends = getattr(torch, "backends", None)
+    mps = getattr(backends, "mps", None)
+    if mps is None or not hasattr(mps, "is_available"):
+        return False
+    return bool(mps.is_available())
+
+
+def _active_cuda_device() -> int:
+    '''Return the active CUDA device index when CUDA is available.'''
+    return int(torch.cuda.current_device())
+
+
+def _cleanup_cuda_memory() -> None:
+    '''Best-effort CUDA cache cleanup after unloading or failed loads.'''
+    if not _cuda_available():
+        return
+
+    torch.cuda.empty_cache()
+    if hasattr(torch.cuda, "ipc_collect"):
+        torch.cuda.ipc_collect()
+
+
+def _cuda_max_memory_map() -> dict[object, str] | None:
+    '''Build an accelerate max_memory map from currently free CUDA memory.'''
+    if not _cuda_available() or not hasattr(torch.cuda, "mem_get_info"):
+        return None
+
+    reserve_bytes = int(DEFAULT_CUDA_MEMORY_RESERVE_GIB * (1024**3))
+    max_memory: dict[object, str] = {"cpu": DEFAULT_CPU_OFFLOAD_MAX_MEMORY}
+
+    for device_index in range(torch.cuda.device_count()):
+        free_bytes, _ = torch.cuda.mem_get_info(device_index)
+        budget_bytes = max(0, free_bytes - reserve_bytes)
+        if budget_bytes <= 0:
+            continue
+
+        budget_mib = max(1, budget_bytes // (1024**2))
+        max_memory[device_index] = f"{budget_mib}MiB"
+
+    return max_memory if len(max_memory) > 1 else None
+
+
+def _build_bnb_quantization_config() -> BitsAndBytesConfig | None:
+    '''Return a 4-bit NF4 quantization config when bitsandbytes is available.'''
+    if BitsAndBytesConfig is None or not is_bitsandbytes_available():
+        return None
+
+    return BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=getattr(torch, "float16", getattr(torch, "float32", None)),
+    )
+
+
+def _model_load_config() -> tuple[str, dict]:
+    '''Choose the best available device and dtype for local inference.'''
+    # Highest-priority path: CUDA for GPU acceleration.
+    if _cuda_available():
+        quantization_config = _build_bnb_quantization_config()
+        if quantization_config is not None:
+            model_load_kwargs: dict[str, object] = {
+                "quantization_config": quantization_config,
+            }
+            if is_accelerate_available():
+                model_load_kwargs["device_map"] = "auto"
+                max_memory = _cuda_max_memory_map()
+                if max_memory is not None:
+                    model_load_kwargs["max_memory"] = max_memory
+            else:
+                model_load_kwargs["device_map"] = {"": _active_cuda_device()}
+            return "cuda", model_load_kwargs
+
+        model_load_kwargs = {
+            "dtype": getattr(torch, "bfloat16", getattr(torch, "float16", None)),
+            "device_map": "auto",
+        }
+        return "cuda", {key: value for key, value in model_load_kwargs.items() if value is not None}
+
+    # Secondary path: Apple Metal acceleration on macOS.
+    if _mps_available():
+        model_load_kwargs = {
+            "dtype": getattr(torch, "float16", getattr(torch, "float32", None)),
+        }
+        return "mps", {key: value for key, value in model_load_kwargs.items() if value is not None}
+
+    # Safe fallback path for CPU-only environments.
+    model_load_kwargs = {
+        "dtype": getattr(torch, "float32", None),
+    }
+    return "cpu", {key: value for key, value in model_load_kwargs.items() if value is not None}
+
+
+def _load_base_model(model_name: str, model_load_kwargs: dict[str, object]):
+    '''Load a base causal LM with cleanup and a clearer OOM failure mode.'''
+    try:
+        return AutoModelForCausalLM.from_pretrained(model_name, **model_load_kwargs)
+    except torch.OutOfMemoryError as exc:
+        _cleanup_cuda_memory()
+        raise RuntimeError(
+            "CUDA ran out of memory while loading the selected model. "
+            "The server now unloads the previous model before swapping, but this "
+            "selection still does not fit in available VRAM. "
+            "Try the 2.6B model or free GPU memory and retry."
+        ) from exc
+    except RuntimeError:
+        _cleanup_cuda_memory()
+        raise
+
+
+def generate_response(
+    tokenized_chat,
+    model,
+    tokenizer,
+    apply_shakespeare_style: bool = True,
+) -> str:
+    ''' Placeholder for response generation code. '''
+    # Prepare tensors for model.generate regardless of tokenizer output shape.
+    generation_inputs, prompt_input_ids = _prepare_generation_inputs(tokenized_chat, model)
+    generation_kwargs = _build_generation_kwargs(generation_inputs, tokenizer)
+    output = model.generate(**generation_kwargs)
+
+    # Decode only newly generated continuation (not the prompt prefix).
+    decoded = tokenizer.decode(
+        _extract_generated_tokens(output, prompt_input_ids),
+        skip_special_tokens=True,
+    )
+    response_text = post_processing(
+        decoded,
+        apply_shakespeare_style=apply_shakespeare_style,
+    )
+
+    # Fast path for normal responses.
+    if not _looks_degenerate_response(response_text):
+        return response_text
+
+    # If a LoRA adapter is active, retry once with adapter disabled.
+    if hasattr(model, "disable_adapter"):
+        with model.disable_adapter():
+            base_output = model.generate(**_build_generation_kwargs(generation_inputs, tokenizer, retry=True))
+        base_decoded = tokenizer.decode(
+            _extract_generated_tokens(base_output, prompt_input_ids),
+            skip_special_tokens=True,
+        )
+        base_response_text = post_processing(
+            base_decoded,
+            apply_shakespeare_style=apply_shakespeare_style,
+        )
+        if not _looks_degenerate_response(base_response_text):
+            return base_response_text
+
+    # Last resort: regenerate with stricter anti-repetition settings.
+    retry_output = model.generate(**_build_generation_kwargs(generation_inputs, tokenizer, retry=True))
+    retry_decoded = tokenizer.decode(
+        _extract_generated_tokens(retry_output, prompt_input_ids),
+        skip_special_tokens=True,
+    )
+    retry_response_text = post_processing(
+        retry_decoded,
+        apply_shakespeare_style=apply_shakespeare_style,
+    )
+
+    if _looks_degenerate_response(retry_response_text) and len(response_text) >= len(retry_response_text):
+        return response_text
+
+    return retry_response_text
+
+
+def _match_case(source_text: str, replacement_text: str) -> str:
+    '''Apply the source token's case pattern to the replacement token.'''
+    if not source_text:
+        return replacement_text
+    if source_text.isupper():
+        return replacement_text.upper()
+    if source_text[0].isupper():
+        return replacement_text.capitalize()
+    return replacement_text
+
+
+def _apply_shakespeare_dialogue_style(response: str) -> str:
+    '''Apply a light Shakespearean polish to plain modern phrasing.'''
+    styled_response = response
+    # Apply each phrase replacement while preserving source capitalization.
+    for pattern, replacement in SHAKESPEARE_STYLE_PATTERNS:
+        styled_response = re.sub(
+            pattern,
+            lambda match, next_replacement=replacement: _match_case(
+                match.group(0),
+                next_replacement,
+            ),
+            styled_response,
+            flags=re.IGNORECASE,
+        )
+    return styled_response
+BROKEN_CHARACTER_PATTERNS = [
+    r"i('m|\s+am)\s+an?\s+(ai|language model|chatbot|assistant)",
+    r"as an?\s+(ai|language model|chatbot|assistant)",
+    r"i('m|\s+am)\s+not\s+(really\s+)?hamlet",
+    r"i('m|\s+am)\s+not\s+(really\s+)?macbeth",
+    r"i\s+don'?t\s+actually",
+    r"i\s+was\s+(trained|created|designed|built)",
+]
+
+def _broke_character(response: str) -> bool:
+    lowered = response.lower()
+    return any(re.search(p, lowered) for p in BROKEN_CHARACTER_PATTERNS)
+
+def _clean_artifacts(text: str) -> str:
+    # Remove closed and unclosed role tags
+    text = re.sub(r'<[\|/\s]*(?:assistant|system|user)[\|/\s>]*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'<\|[^>]{0,30}(\|>|>|$)', '', text, flags=re.MULTILINE)
+    text = re.sub(r'<[^>]+/?>', '', text)
+
+    # Remove speaker prefix insertions like "Macbeth:" or "Speaker | Macbeth >"
+    text = re.sub(r'\bSpeaker\s*\|?\s*\w+\s*[>|]*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'^(Hamlet|Macbeth|Horatio|Claudius|Ophelia|Gertrude|Banquo|Laertes)\s*:\s*', '', text, flags=re.IGNORECASE | re.MULTILINE)
+
+    # Remove stage directions in brackets and parentheses
+    text = re.sub(r'\[.*?\]', '', text, flags=re.DOTALL)
+    text = re.sub(r'\(.*?\)', '', text, flags=re.DOTALL)
+
+    # Remove action descriptions without brackets (e.g. "Eyes narrowing slightly, voice low.")
+    text = re.sub(r'^[A-Z][a-z]+ing\s[^.]+\.\s*', '', text, flags=re.MULTILINE)
+
+    # Remove markdown
+    text = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', text)
+    text = re.sub(r'\*', '', text)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^-{2,}\s*$', '', text, flags=re.MULTILINE)  # --- dividers
+    text = re.sub(r'\\>', '', text)  # \> artifacts
+    text = re.sub(r'\|', '', text)   # lone pipe characters
+    # Catch > and >> artifacts
+    text = re.sub(r'>{1,}', '', text)
+
+    # Catch _end> and </end_of_response style tokens
+    text = re.sub(r'_end>?', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'</?end_of_response>?', '', text, flags=re.IGNORECASE)
+
+    # Catch unbracketed stage directions — lines starting with "He/She/I + verb"
+    text = re.sub(r'\b(He|She|I)\s+(pace|lean|rise|stand|pause|glance|turn|look|step|move|sit|walk)[a-z]*\s[^.!?]*[.!?]', '', text, flags=re.IGNORECASE)
+
+    # Catch narrator-style italic action lines without asterisks
+    text = re.sub(r'"[A-Z][^"]*(?:voice|eyes|hand|face|smile|gaze)[^"]*"', '', text)
+    # Normalize whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    # Remove action descriptions ending in colon — "My voice lowers to a whisper...:"
+    text = re.sub(r'\b(My|His|Her|Its)\s+\w+[^:]{0,80}:\s*', '', text, flags=re.IGNORECASE)
+
+    # Remove lines where a body part or voice action leads into quoted speech
+    text = re.sub(r'\b(voice|eyes|hands?|face|gaze|lips?|brow)\s+[^:\"]{0,60}[,:]?\s*[\""]', '"', text, flags=re.IGNORECASE)
+
+    # Remove "Final Turn:" and similar meta-labels
+    text = re.sub(r'\b(Final Turn|End Turn|Scene|Act)\s*\d*\s*:', '', text, flags=re.IGNORECASE)
+
+    # Remove possessive action openers at start of sentences
+    text = re.sub(r'(?<=[.!?]\s)(My|His|Her)\s+\w+\s+\w+s\b[^:\"]{0,80}[:,]\s*', '', text, flags=re.IGNORECASE)
+
+    return text
+
+CHARACTER_NAME_CORRECTIONS = {
+    r'\bOphelio[a-z]*\b': 'Ophelia',
+    r'\bOphelie[a-z]*\b': 'Ophelia',
+    r'\bOphelion[a-z]*\b': 'Ophelia',
+    r'\bOphelian[a-z]*\b': 'Ophelia',
+    r'\bOpheliant[a-z]*\b': 'Ophelia',
+    r'\bBanquoe?\b': 'Banquo',
+    r'\bClaudiu[a-z]+\b': 'Claudius',
+    r'\bGertrud[^e][a-z]*\b': 'Gertrude',
+    r'\bHoratio[a-z]+\b': 'Horatio',
+    r'\bLaerte[a-z]+\b': 'Laertes',
+}
+
+def _correct_character_names(text: str) -> str:
+    '''Fix hallucinated name variants back to canonical Shakespeare names.'''
+    for pattern, correct_name in CHARACTER_NAME_CORRECTIONS.items():
+        text = re.sub(pattern, correct_name, text, flags=re.IGNORECASE)
+    return text
+
+def post_processing(response, apply_shakespeare_style: bool = True) -> str:
+    cleaned_response = str(response).replace("<|assistant|>", " ").replace("</s>", " ")
+    cleaned_response = re.sub(r"\s+", " ", cleaned_response)
+    cleaned_response = cleaned_response.strip()
+
+    cleaned_response = _clean_artifacts(cleaned_response)
+    cleaned_response = _correct_character_names(cleaned_response)
+
+    if apply_shakespeare_style:
+        cleaned_response = _apply_shakespeare_dialogue_style(cleaned_response)
+
+    if _broke_character(cleaned_response):
+        cleaned_response = (
+            f"I know not what strange madness compels thee to speak thus. "
+            f"I am {current_character}, and shall remain so."
+        )
+
+    return cleaned_response
+
+
+def generate_output(question, tokenizer, model, context=None, apply_shakespeare_style=True) -> str:
+    sanitized_question = _sanitize_user_input(question, current_character)
+    tokenized_chat = get_chat_template(tokenizer, sanitized_question, context)
+    final_response = generate_response(tokenized_chat, model, tokenizer, apply_shakespeare_style=apply_shakespeare_style)
+    add_chat_history(model_response=final_response)
+    return final_response
+
+
+def _configured_adapters(configured_model: dict) -> list[dict]:
+    '''Normalize model adapters from either the current or legacy config shape.'''
+    # Preferred shape used by current model metadata.
+    adapters = configured_model.get("adapters")
+    if isinstance(adapters, list):
+        return [
+            adapter
+            for adapter in adapters
+            if isinstance(adapter, dict)
+        ]
+
+    # Legacy shape fallback for backward compatibility with older payloads.
+    legacy_adapters = configured_model.get("adapter_paths")
+    if not isinstance(legacy_adapters, list):
+        return []
+
+    normalized_adapters = []
+    for adapter in legacy_adapters:
+        if not isinstance(adapter, dict):
+            continue
+
+        # Preserve adapter description while extracting the name->path pair.
+        description = adapter.get("description", "")
+        adapter_fields = [
+            (key, value)
+            for key, value in adapter.items()
+            if key != "description" and isinstance(value, str)
+        ]
+        if not adapter_fields:
+            continue
+
+        adapter_name, adapter_path = adapter_fields[0]
+        normalized_adapters.append(
+            {
+                "name": adapter_name,
+                "path": adapter_path,
+                "description": description,
+            }
+        )
+
+    return normalized_adapters
+
+
+def _metadata_text(source: dict, key: str, fallback: str = "") -> str:
+    '''Return a stripped string metadata value with a fallback.'''
+    value = source.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return fallback
+
+
+def _adapter_selection_entry(
+    configured_model: dict,
+    adapter: dict,
+    adapter_path: str,
+) -> dict[str, str]:
+    '''Build the frontend/API adapter entry, including persona metadata.'''
+    model_character = _metadata_text(
+        configured_model,
+        "character",
+        DEFAULT_CHARACTER,
+    )
+    model_work = _metadata_text(configured_model, "work", DEFAULT_WORK)
+    return {
+        "name": _metadata_text(adapter, "name", adapter_path),
+        "path": adapter_path,
+        "description": _metadata_text(adapter, "description"),
+        "character": _metadata_text(adapter, "character", model_character),
+        "work": _metadata_text(adapter, "work", model_work),
+    }
+
+
+def _is_base_model_adapter(adapter_path: str) -> bool:
+    '''Return whether the selected adapter path refers to the raw base model.'''
+    return adapter_path.strip() == BASE_MODEL_ADAPTER_PATH
+
+
+def _normalize_model_id(model_id: str) -> str:
+    '''Normalize model identifiers for robust equality checks.'''
+    return model_id.strip().rstrip("/").lower()
+
+
+def _adapter_base_model_name(adapter_path: Path) -> str | None:
+    '''Return adapter-declared base model name from adapter_config.json when available.'''
+    config_path = adapter_path / "adapter_config.json"
+    if not config_path.exists():
+        return None
+
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    base_model_name = config.get("base_model_name_or_path")
+    if isinstance(base_model_name, str):
+        normalized_name = base_model_name.strip()
+        if normalized_name:
+            return normalized_name
+
+    return None
+
+
+def _is_adapter_compatible_with_model(model_name: str, adapter_path: Path) -> bool:
+    '''Validate adapter base model metadata against selected base model.'''
+    adapter_base_model = _adapter_base_model_name(adapter_path)
+    if adapter_base_model is None:
+        # If metadata is unavailable, defer compatibility check to PEFT load.
+        return True
+
+    return _normalize_model_id(adapter_base_model) == _normalize_model_id(model_name)
+
+
+def _base_model_adapter_entry(configured_model: dict) -> dict[str, str]:
+    '''Build a synthetic adapter entry that targets the unmodified base model.'''
+    return {
+        "name": "base_model",
+        "path": BASE_MODEL_ADAPTER_PATH,
+        "description": configured_model.get(
+            "base_description",
+            "Base model without a LoRA adapter.",
+        ),
+        "character": _metadata_text(configured_model, "character", DEFAULT_CHARACTER),
+        "work": _metadata_text(configured_model, "work", DEFAULT_WORK),
+    }
+
+
+def model_selection():
+    ''' Model selection code to return the list of available models and adapters. '''
+    available_models = []
+
+    # Validate each model's adapters and only return loadable options.
+    for configured_model in model_list():
+        adapters = []
+        for adapter in _configured_adapters(configured_model):
+            adapter_path = adapter.get("path", "").strip()
+            if not adapter_path:
+                continue
+
+            if _is_base_model_adapter(adapter_path):
+                # Always expose synthetic base adapter token as loadable.
+                adapters.append(
+                    _adapter_selection_entry(configured_model, adapter, adapter_path)
+                )
+                continue
+
+            resolved_path = resolve_adapter_path(adapter_path)
+            if not resolved_path.exists():
+                # Hide broken adapter entries from the frontend selector.
+                continue
+            if not _is_adapter_compatible_with_model(configured_model["name"], resolved_path):
+                # Hide adapters trained on a different base model to prevent runtime shape errors.
+                continue
+
+            adapters.append(
+                _adapter_selection_entry(configured_model, adapter, adapter_path)
+            )
+
+        if not adapters:
+            # Keep configured base models testable even when no adapter checkpoints exist.
+            adapters.append(_base_model_adapter_entry(configured_model))
+
+        if adapters:
+            # Only publish models that have at least one usable adapter target.
+            default_adapter_path = str(configured_model.get("default_adapter_path", "")).strip()
+            available_adapter_paths = {adapter["path"] for adapter in adapters}
+            if not default_adapter_path or default_adapter_path not in available_adapter_paths:
+                default_adapter_path = adapters[0]["path"]
+
+            available_models.append(
+                {
+                    "name": configured_model["name"],
+                    "description": configured_model.get("description", ""),
+                    "character": _metadata_text(
+                        configured_model,
+                        "character",
+                        DEFAULT_CHARACTER,
+                    ),
+                    "work": _metadata_text(configured_model, "work", DEFAULT_WORK),
+                    "default_adapter_path": default_adapter_path,
+                    "adapters": adapters,
+                }
+            )
+
+    return available_models
+
+
+def validate_and_resolve_adapter(model_name: str, adapter_path: str) -> Path | None:
+    '''Validate adapter_path against the model's published adapter list.
+
+    Returns None for the base-model-only pseudo-adapter, or the resolved on-disk Path otherwise.
+    Raises ValueError for unknown or incompatible adapters and FileNotFoundError for missing paths.
+    '''
+    selected_model = next(
+        (m for m in model_selection() if m["name"] == model_name),
+        None,
+    )
+    if selected_model is None:
+        raise ValueError(f"Model is not available: {model_name}")
+
+    selected_adapter = next(
+        (a for a in selected_model["adapters"] if a["path"] == adapter_path),
+        None,
+    )
+    if selected_adapter is None:
+        raise ValueError(
+            f"Adapter path '{adapter_path}' is not valid for model '{model_name}'."
+        )
+
+    if _is_base_model_adapter(selected_adapter["path"]):
+        return None
+
+    resolved = resolve_adapter_path(selected_adapter["path"])
+    if not resolved.exists():
+        raise FileNotFoundError(f"Adapter path does not exist: {resolved}")
+    if not _is_adapter_compatible_with_model(model_name, resolved):
+        adapter_base = _adapter_base_model_name(resolved)
+        raise ValueError(
+            "Adapter is incompatible with selected base model. "
+            f"Adapter expects '{adapter_base}', but selected model is '{model_name}'."
+        )
+    return resolved
+
+
+def load_base_model_and_tokenizer(model_name: str):
+    '''Load the base model and tokenizer without applying any LoRA adapter.
+
+    Used by the hot-swap path so the base model can be kept resident across adapter switches.
+    Note: unlike get_model, this always loads the base model's tokenizer even when an adapter
+    ships its own tokenizer.json — that edge case only applies to the single-chat full-load path.
+    '''
+    if not any(m["name"] == model_name for m in model_selection()):
+        raise ValueError(f"Model is not available: {model_name}")
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    preferred_device, model_load_kwargs = _model_load_config()
+    base_model = _load_base_model(model_name, model_load_kwargs)
+    if preferred_device == "mps" and hasattr(base_model, "to"):
+        base_model = base_model.to(preferred_device)
+    base_model.eval()
+    return base_model, tokenizer
+
+
+def attach_named_adapter(model, resolved_path: Path, slot_name: str) -> PeftModel:
+    '''Wrap or hot-swap a named LoRA adapter onto an existing model.
+
+    On first call with a bare base model, wraps it in a PeftModel. On subsequent calls with an
+    existing PeftModel, loads the adapter alongside any resident ones and activates it — avoiding
+    a full base model reload when participants share the same base model.
+    '''
+    if isinstance(model, PeftModel):
+        model.load_adapter(str(resolved_path), adapter_name=slot_name)
+        model.set_adapter(slot_name)
+        return model
+
+    try:
+        wrapped = PeftModel.from_pretrained(model, str(resolved_path), adapter_name=slot_name)
+    except RuntimeError as exc:
+        raise ValueError(
+            "Failed to load adapter weights. "
+            "This checkpoint is likely incompatible with the selected base model architecture."
+        ) from exc
+    wrapped.eval()
+    return wrapped
+
+
+def get_model(model_name: str, adapter_path: str):
+    ''' Load the base Hugging Face model/tokenizer and apply PEFT adapter, then return both. '''
+    normalized_model_name = model_name.strip()
+    normalized_adapter_path = adapter_path.strip()
+
+    if not normalized_model_name:
+        raise ValueError("Model name is required.")
+    if not normalized_adapter_path:
+        raise ValueError("Adapter path is required.")
+
+    resolved_adapter_path = validate_and_resolve_adapter(normalized_model_name, normalized_adapter_path)
+
+    # Prefer adapter-local tokenizer when available, otherwise use base model tokenizer.
+    tokenizer_source = (
+        str(resolved_adapter_path)
+        if resolved_adapter_path is not None and (resolved_adapter_path / "tokenizer.json").exists()
+        else normalized_model_name
+    )
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    preferred_device, model_load_kwargs = _model_load_config()
+    base_model = _load_base_model(normalized_model_name, model_load_kwargs)
+    if preferred_device == "mps" and hasattr(base_model, "to"):
+        base_model = base_model.to(preferred_device)
+
+    if resolved_adapter_path is None:
+        base_model.eval()
+        return base_model, tokenizer
+
+    try:
+        model = PeftModel.from_pretrained(base_model, str(resolved_adapter_path))
+    except RuntimeError as exc:
+        del base_model
+        gc.collect()
+        _cleanup_cuda_memory()
+        raise ValueError(
+            "Failed to load adapter weights into the selected base model. "
+            "This adapter checkpoint is likely incompatible with the selected model architecture."
+        ) from exc
+    model.eval()
+    return model, tokenizer
+
+
+def resolve_adapter_path(adapter_path: str) -> Path:
+    ''' Resolve an adapter path relative to the repository root when needed. '''
+    # Accept absolute paths as-is and map relative paths to repo root.
+    resolved_adapter_path = Path(adapter_path)
+    if not resolved_adapter_path.is_absolute():
+        resolved_adapter_path = REPO_ROOT / resolved_adapter_path
+    return resolved_adapter_path
+
+
+# Initialize global message history with default system prompt at import time.
+refresh_chat_history()

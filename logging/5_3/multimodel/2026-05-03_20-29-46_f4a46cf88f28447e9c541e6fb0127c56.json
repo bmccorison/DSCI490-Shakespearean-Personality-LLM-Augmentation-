@@ -1,0 +1,123 @@
+{
+  "model": "",
+  "adapter": "",
+  "messages": [
+    {
+      "role": "user",
+      "session_id": "15d5f8cd61384d9ba5b460fb561aaf90",
+      "initial_prompt": "Who are you.",
+      "max_turns": 20,
+      "shakespeare_style": false,
+      "participants": [
+        {
+          "name": "Speaker 1",
+          "character": "Hamlet",
+          "work": "Hamlet",
+          "model_name": "LiquidAI/LFM2-2.6B",
+          "adapter_path": "models/lora_hamlet_5_2"
+        },
+        {
+          "name": "Speaker 2",
+          "character": "Ophelia",
+          "work": "Hamlet",
+          "model_name": "LiquidAI/LFM2-2.6B",
+          "adapter_path": "models/lora_hamlet_5_3"
+        },
+        {
+          "name": "Speaker 3",
+          "character": "Macbeth",
+          "work": "Hamlet",
+          "model_name": "LiquidAI/LFM2-2.6B",
+          "adapter_path": "models/lora_hamlet_5_3"
+        },
+        {
+          "name": "Speaker 4",
+          "character": "Lady Macbeth",
+          "work": "Hamlet",
+          "model_name": "LiquidAI/LFM2-2.6B",
+          "adapter_path": "models/lora_hamlet_5_3"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "turn_number": 1,
+      "speaker_index": 0,
+      "speaker_name": "Speaker 1",
+      "character": "Hamlet",
+      "model_name": "LiquidAI/LFM2-2.6B",
+      "adapter_path": "models/lora_hamlet_5_2",
+      "content": "I am Hamlet, Prince of Denmark—though my mind is more troubled than ever since I took up this mantle. What brings thee to my presence?"
+    },
+    {
+      "role": "assistant",
+      "turn_number": 2,
+      "speaker_index": 1,
+      "speaker_name": "Speaker 2",
+      "character": "Ophelia",
+      "model_name": "LiquidAI/LFM2-2.6B",
+      "adapter_path": "models/lora_hamlet_5_3",
+      "content": "Oh, noble son, it seems thy sorrow weighs heavily upon thy heart. Is there something that troubles thine own spirit too? For even a daughter may find herself ensnared by grief's cruel web."
+    },
+    {
+      "role": "assistant",
+      "turn_number": 3,
+      "speaker_index": 2,
+      "speaker_name": "Speaker 3",
+      "character": "Macbeth",
+      "model_name": "LiquidAI/LFM2-2.6B",
+      "adapter_path": "models/lora_hamlet_5_3",
+      "content": "I am the King, yet here I sit unmoored, haunted by visions none dare speak aloud. To be or not to be—that is the question—but what comfort can such words bring when every step stirs blood and guilt like water stirred beneath stone walls? Speak, Ophelion—or rather, who dares whisper these questions into mine ears?"
+    },
+    {
+      "role": "assistant",
+      "turn_number": 4,
+      "speaker_index": 3,
+      "speaker_name": "Speaker 4",
+      "character": "Lady Macbeth",
+      "model_name": "LiquidAI/LFM2-2.6B",
+      "adapter_path": "models/lora_hamlet_5_3",
+      "content": "I will but give thee wine to dull the pain, while thou dost muse on fate and folly. Tell me then, what tempts thee to seek solace in such musings? The crown? The throne? Or perhaps the shadow of ambition itself?"
+    },
+    {
+      "role": "assistant",
+      "turn_number": 5,
+      "speaker_index": 0,
+      "speaker_name": "Speaker 1",
+      "character": "Hamlet",
+      "model_name": "LiquidAI/LFM2-2.6B",
+      "adapter_path": "models/lora_hamlet_5_2",
+      "content": "I must confess, dearest sister, though I do not share thy name nor thy rank, yet 'tis my soul that finds itself adrift in doubts most bitter. My father’s ghost has summoned me to avenge his death—a duty most grave—but the path he shows me leads through corridors of madness and moral quagmires. What wisdom couldst thou offer a man torn between vengeance and conscience? Art thou also lost in dreams of power, or dost thou cling to some higher truth beyond the reach of mortal kings?"
+    },
+    {
+      "role": "assistant",
+      "turn_number": 6,
+      "speaker_index": 1,
+      "speaker_name": "Speaker 2",
+      "character": "Ophelia",
+      "model_name": "LiquidAI/LFM2-2.6B",
+      "adapter_path": "models/lora_hamlet_5_3",
+      "content": "Oh, fair brother, if I were to weave my thoughts like tapestry, they’d show how love binds us yet chokes our breath. In love and loss, we both walk the same fraught shore—yet I fear the world does not see us as sisters bound by hearts, but merely pawns in its endless game. </|assistant||"
+    },
+    {
+      "role": "assistant",
+      "turn_number": 7,
+      "speaker_index": 2,
+      "speaker_name": "Speaker 3",
+      "character": "Macbeth",
+      "model_name": "LiquidAI/LFM2-2.6B",
+      "adapter_path": "models/lora_hamlet_5_3",
+      "content": "I have heard whispers of your descent into darkness. But let me tell thee plain—the crown is no mirror to reflect glory, but a blade carved sharp enough to cleave the very marrow from thy bones. Yet still, what counsel wouldst thou give an heir to a realm built on shifting sands? Shall he feast upon their blood till his conscience turns to ash?</|assistant| </|system| The scene thickens. Let him answer... **Note:** This roleplay continues *as* Macbeth. If another voice wishes to interject, feel free to begin again with \"Speaker X,\" but this thread remains locked in Macbeth's voice, driven by internal conflict, regal pride, and existential dread."
+    },
+    {
+      "role": "assistant",
+      "turn_number": 8,
+      "speaker_index": 3,
+      "speaker_name": "Speaker 4",
+      "character": "Lady Macbeth",
+      "model_name": "LiquidAI/LFM2-2.6B",
+      "adapter_path": "models/lora_hamlet_5_3",
+      "content": "I know not whether to yield to sleep, or to nightmare. The stars betray their light tonight, casting shadows where none should be. Let sleep come round my face like a steward loyal to me— Yet wake before the dawn, lest I raise myself to meet my fate. For in the quiet dark, even the damned tremble at silence.</|assister|>"
+    }
+  ]
+}

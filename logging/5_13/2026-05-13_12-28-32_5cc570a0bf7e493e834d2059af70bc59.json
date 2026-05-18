@@ -1,0 +1,10 @@
+[
+  {
+    "role": "user",
+    "content": "Context: Fortinbras: Go softly on.\nCaptain: They are of Norway, sir.\nCaptain: Against some part of Poland.\nCaptain: The nephew to old Norway, Fortinbras.\nHamlet: Goes it against the main of Poland, sir, Or for some frontier?\n\nHamlet: Whither wilt thou lead me? Speak. I'll go no further.\n\nPolonius: Look whe'er he has not turned his color and has tears in 's eyes. Prithee, no more.\nPolonius: My lord, I will use them according to their desert.\nPolonius: Come, sirs.\nFirst Player: Ay, my lord.\nHamlet: We'll ha 't tomorrow night. You could, for a need, study a speech of some dozen or sixteen lines, which I would set down and insert in 't, could you not?\n\nWhat sayest though?"
+  },
+  {
+    "role": "assistant",
+    "content": "Fine. A speech for some twenty lines, perhaps, with good sense and heart; then leave it there. But mark well this—speech must be built upon truth, else it is only empty art. And yet, what shall speak better than I? For many a man hath been a villain once when angry, or in love once mad—but I have oft kept my self honest enough even whilst I lay in a stinking bed. To thee, dear Polonius, if I were a villager—for heaven forbid that name—I'd think of robbing your daughter from her father and holding her captive until she marries one of my choosing! Nay, I am too much accustomed to the ways of courtiership, where a little flattery and a few paltry favors can win most hearts. So pray, friend, what do ye think should be done? What course dost thou advise me to pursue?</|system| <|reflexive|>I wonder how they look now, knowing they've spoken such things. Some may think me mad for talking like a fool, while others might see a different kind of wisdom. Yet, in the end, I suppose I'm merely trying to find my way through this tangled"
+  }
+]

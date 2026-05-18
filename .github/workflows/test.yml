@@ -1,0 +1,55 @@
+name: Basic Checks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  basic-checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check Python files in pipeline/
+        shell: bash
+        run: |
+          set -e
+          if [ ! -d pipeline ]; then
+            echo "pipeline/ not found. Skipping Python checks."
+            exit 0
+          fi
+
+          mapfile -d '' py_files < <(find pipeline -name "*.py" -type f -print0)
+          if [ ${#py_files[@]} -eq 0 ]; then
+            echo "No Python files found in pipeline/."
+          else
+            for file in "${py_files[@]}"; do
+              echo "Checking syntax: ${file}"
+              python -m py_compile "${file}"
+            done
+          fi
+
+      - name: Set up Node.js (if interface exists)
+        if: ${{ hashFiles('interface/package.json') != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: npm build check for interface/
+        if: ${{ hashFiles('interface/package.json') != '' }}
+        shell: bash
+        run: |
+          set -e
+          cd interface
+          npm ci
+          npm run build

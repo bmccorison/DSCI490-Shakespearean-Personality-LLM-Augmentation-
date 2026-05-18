@@ -1,0 +1,35 @@
+[
+  {
+    "role": "user",
+    "session_id": "bd7ae5dd5269448b982478ba7ff25d2a",
+    "initial_prompt": "Begin.",
+    "max_turns": 1,
+    "shakespeare_style": false,
+    "participants": [
+      {
+        "name": "Speaker1",
+        "character": "Character1",
+        "work": "Hamlet",
+        "model_name": "ModelA",
+        "adapter_path": "__base__"
+      },
+      {
+        "name": "Speaker2",
+        "character": "Character2",
+        "work": "Hamlet",
+        "model_name": "ModelA",
+        "adapter_path": "__base__"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "turn_number": 1,
+    "speaker_index": 0,
+    "speaker_name": "Speaker1",
+    "character": "Character1",
+    "model_name": "ModelA",
+    "adapter_path": "__base__",
+    "content": "reply 1"
+  }
+]

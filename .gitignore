@@ -1,0 +1,10 @@
+/.vscode
+*.venv
+interface/node_modules
+interface/dist
+*.codex
+**AGENTS.md
+**__pycache__
+**.pyc
+.env
+

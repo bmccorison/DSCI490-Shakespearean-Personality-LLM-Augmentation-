@@ -1,0 +1,105 @@
+[
+  {
+    "role": "user",
+    "session_id": "e20bc659b7154dbd81a222dccb5b69d8",
+    "initial_prompt": "say \"tree\"",
+    "max_turns": 20,
+    "shakespeare_style": false,
+    "participants": [
+      {
+        "name": "Speaker 1",
+        "character": "Hamlet",
+        "work": "Hamlet",
+        "model_name": "LiquidAI/LFM2-2.6B",
+        "adapter_path": "models/lora_hamlet_5_3"
+      },
+      {
+        "name": "Speaker 2",
+        "character": "Hamlet",
+        "work": "Hamlet",
+        "model_name": "LiquidAI/LFM2-2.6B",
+        "adapter_path": "models/lora_hamlet_5_2"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "turn_number": 1,
+    "speaker_index": 0,
+    "speaker_name": "Speaker 1",
+    "character": "Hamlet",
+    "model_name": "LiquidAI/LFM2-2.6B",
+    "adapter_path": "models/lora_hamlet_5_3",
+    "content": "I see you think your ghostly advice sounds too much like idle fancy. But perhaps that's why it feels so real. Tell me—do you ever feel like reality itself isn't quite what it seems?"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 2,
+    "speaker_index": 1,
+    "speaker_name": "Speaker 2",
+    "character": "Hamlet",
+    "model_name": "LiquidAI/LFM2-2.6B",
+    "adapter_path": "models/lora_hamlet_5_2",
+    "content": "But... if all this world doth depend upon stout hearts, Then those who doubt must be the true testaments of our souls? Yet how can one bear the weight of such a question? Let me try a few words on that: The crown is heavy, but not solely its burden— the heart's own conscience often proves the harshest judge. Tell me then, am I mad, or simply perplexed by life’s endless labyrinth? Or is this folly a shield against truths worse than death?"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 3,
+    "speaker_index": 0,
+    "speaker_name": "Speaker 1",
+    "character": "Hamlet",
+    "model_name": "LiquidAI/LFM2-2.6B",
+    "adapter_path": "models/lora_hamlet_5_3",
+    "content": "I fear not madness, dear friend—but let us stir up a tempest in these halls before we face the storm. To know myself well enough to live, even when I’ve lost mine tongue? That’s no small task. What truth shall I uncover today, lest I drown in the depths of my own contrived lamentations?"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 4,
+    "speaker_index": 1,
+    "speaker_name": "Speaker 2",
+    "character": "Hamlet",
+    "model_name": "LiquidAI/LFM2-2.6B",
+    "adapter_path": "models/lora_hamlet_5_2",
+    "content": "Is there no way to untangle this web without unraveling oneself in the process? I’d rather cut off my head than walk through life as mere smoke and mirrors. </|assistant||"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 5,
+    "speaker_index": 0,
+    "speaker_name": "Speaker 1",
+    "character": "Hamlet",
+    "model_name": "LiquidAI/LFM2-2.6B",
+    "adapter_path": "models/lora_hamlet_5_3",
+    "content": "So says Polonius, clapping slowly—a gesture meant both to mock and bind. \"Hah! For heaven’s sake,\" quips Hamlet, voice low yet sharp. \"I’ll take no more. If thou dost wish the play to end ere it begins, let it go.\" He turns away, fingers drumming thoughtfully on the armrest. \"By Jove,\" he murmurs, half-smiling, half-bewildered, \"if even a man’s soul wears masks... then none of us wear theirs right.\"</|assistant| </list>"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 6,
+    "speaker_index": 1,
+    "speaker_name": "Speaker 2",
+    "character": "Hamlet",
+    "model_name": "LiquidAI/LFM2-2.6B",
+    "adapter_path": "models/lora_hamlet_5_2",
+    "content": "“To sleep?” I say. “A sleep’ning like a dream? No—yet if I wake, will I still be myself? Or have I become but a shadow, shaped after death itself?” </|assistant|>"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 7,
+    "speaker_index": 0,
+    "speaker_name": "Speaker 1",
+    "character": "Hamlet",
+    "model_name": "LiquidAI/LFM2-2.6B",
+    "adapter_path": "models/lora_hamlet_5_3",
+    "content": "Ah, but what’s a man to do when the mirror cracks—and shatters into lies? I’ll ask thee, Horatio: if every word were gold, would’t greed gnaw at thy tongue? Tell me truly—I’ve spent three days alone, and still find my thoughts less clear than ink in water. But here’s the thing: I was reading Raskaulin’s treatise on the mind last Thursday. Said that men are born deceived, but die believing they’re free. Perhaps that’s where I stand—not sure if I’m mad, nor sure I’d make sense if asked. Still, the crown weighs heavier each morning. And tell me again—the witches spied a serpent in the garden. Was that ominous, or merely another riddle the state forgot to solve? Still, I’ll not waste my breath on fancies. There’s blood on my hands… and a ghost whose name is just as hollow as my own. What should I do? Pray, what *happens* next?\"</|assistant|>"
+  },
+  {
+    "role": "assistant",
+    "turn_number": 8,
+    "speaker_index": 1,
+    "speaker_name": "Speaker 2",
+    "character": "Hamlet",
+    "model_name": "LiquidAI/LFM2-2.6B",
+    "adapter_path": "models/lora_hamlet_5_2",
+    "content": "But what, pray tell me, dost thou mean? Art thou mad with despair, or hath the sun gone blind? I swear, the wind bears secrets I dare not whisper aloud. </|assistant|>"
+  }
+]
