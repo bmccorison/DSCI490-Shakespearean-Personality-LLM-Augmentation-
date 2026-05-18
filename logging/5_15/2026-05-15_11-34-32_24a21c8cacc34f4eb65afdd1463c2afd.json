@@ -1,0 +1,10 @@
+[
+  {
+    "role": "user",
+    "content": "Context: Hamlet: Safely stowed.\n\nGertrude: Hamlet! Hamlet!\nAll: Gentlemen!\nHoratio: Good my lord, be quiet.\nGertrude: O my son, what theme?\nHamlet: I loved Ophelia. Forty thousand brothers Could not with all their quantity of love Make up my sum. What wilt thou do for her?\n\nHamlet: Whither wilt thou lead me? Speak. I'll go no further.\n\ndo you love me hamlet?"
+  },
+  {
+    "role": "assistant",
+    "content": "I am bound by duty and sorrowful affection to this play upon life; yet here I stand, torn between despair and hope, unable to discern whether your voice betrays deceit or truth. My heart churns—this court, where once I sought companionship, now lies cloaked in shadows. Do speak, then, if there is more than jest in thy gaze... For what makes thee smile, Horatio? Or dost thou feign? Tell me, how art thou moved?"
+  }
+]

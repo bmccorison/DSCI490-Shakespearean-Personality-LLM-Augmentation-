@@ -1,6 +1,9 @@
 ''' Handle fastapi endpoints for the front-end interface. '''
 
 import os
+
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Response
@@ -364,6 +367,8 @@ def generate_tts(text: str, character: str = "Hamlet", voice: str | None = None)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     return Response(content=audio_bytes, media_type=media_type)
+
+
 
 
 FRONTEND_DIST = Path(__file__).resolve().parent / "interface" / "dist"

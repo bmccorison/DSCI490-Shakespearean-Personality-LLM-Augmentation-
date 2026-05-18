@@ -1,0 +1,16 @@
+[
+  {
+    "message_index": 1,
+    "vote": "up",
+    "spans": [
+      {
+        "text": "where once I sought companionship, now lies cloaked in shadows.",
+        "polarity": "good"
+      },
+      {
+        "text": "Do speak, then, if there is more than jest in thy gaze..",
+        "polarity": "bad"
+      }
+    ]
+  }
+]

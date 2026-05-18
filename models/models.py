@@ -70,6 +70,13 @@ def model_list() -> list[dict]:
                     "character": DEFAULT_CHARACTER,
                     "work": DEFAULT_WORK,
                 },
+                {
+                    "name": "macbeth_lora_1",
+                    "path": "models/lora_macbeth_1",
+                    "description": "Context-aware LoRA adapter trained on speaker-aware message-style dialogue windows for Macbeth.",
+                    "character": "Macbeth",
+                    "work": "Macbeth",
+                },
             ],
         },
         {

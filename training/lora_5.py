@@ -380,7 +380,7 @@ class WeightedDataCollator(base_training.DataCollatorForSeq2Seq):
         return batch
 
 class WeightedTrainer(base_training.Trainer):
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs.pop("labels")
         weights = inputs.pop("weights")
 

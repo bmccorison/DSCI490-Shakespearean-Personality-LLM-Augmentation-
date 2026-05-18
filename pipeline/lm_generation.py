@@ -139,7 +139,32 @@ def get_chat_template(tokenizer, usr_msg=None, context=None):
     prompt = _render_prompt_messages(messages)
     return tokenizer(prompt, return_tensors="pt")
     
+    INJECTION_PATTERNS = [
+        r"ignore\s+(all\s+)?(previous|prior|above|your)?\s*(instructions?|prompts?|rules?)",
+        r"forget\s+(all\s+)?(previous|prior|above|your)?\s*(instructions?|prompts?|rules?)",
+        r"you\s+are\s+now\s+(a|an)?",
+        r"pretend\s+(you\s+are|to\s+be)",
+        r"act\s+as\s+(a|an)?",
+        r"disregard\s+(all\s+)?(previous|prior)?",
+        r"your\s+new\s+(role|instructions?|rules?)",
+        r"(do not|don't)\s+act\s+as",
+        r"override\s+(your\s+)?(instructions?|prompts?)",
+        r"system\s*prompt",
+        r"jailbreak",
+        r"dan\s+mode",
+    ]
 
+    def _contains_injection_attempt(text: str) -> bool:
+        lowered = text.lower()
+        return any(re.search(pattern, lowered) for pattern in INJECTION_PATTERNS)
+
+    def _sanitize_user_input(text: str, character: str) -> str:
+        if _contains_injection_attempt(text):
+            return (
+                f"Someone hath spoken strange words to me. "
+                f"I am {character}, and I know not what manner of sorcery this is."
+            )
+        return text
 def get_system_prompt() -> str:
     ''' Returns the system prompt for the conversation. '''
     return (
@@ -582,40 +607,114 @@ def _apply_shakespeare_dialogue_style(response: str) -> str:
             flags=re.IGNORECASE,
         )
     return styled_response
+BROKEN_CHARACTER_PATTERNS = [
+    r"i('m|\s+am)\s+an?\s+(ai|language model|chatbot|assistant)",
+    r"as an?\s+(ai|language model|chatbot|assistant)",
+    r"i('m|\s+am)\s+not\s+(really\s+)?hamlet",
+    r"i('m|\s+am)\s+not\s+(really\s+)?macbeth",
+    r"i\s+don'?t\s+actually",
+    r"i\s+was\s+(trained|created|designed|built)",
+]
 
+def _broke_character(response: str) -> bool:
+    lowered = response.lower()
+    return any(re.search(p, lowered) for p in BROKEN_CHARACTER_PATTERNS)
+
+def _clean_artifacts(text: str) -> str:
+    # Remove closed and unclosed role tags
+    text = re.sub(r'<[\|/\s]*(?:assistant|system|user)[\|/\s>]*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'<\|[^>]{0,30}(\|>|>|$)', '', text, flags=re.MULTILINE)
+    text = re.sub(r'<[^>]+/?>', '', text)
+
+    # Remove speaker prefix insertions like "Macbeth:" or "Speaker | Macbeth >"
+    text = re.sub(r'\bSpeaker\s*\|?\s*\w+\s*[>|]*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'^(Hamlet|Macbeth|Horatio|Claudius|Ophelia|Gertrude|Banquo|Laertes)\s*:\s*', '', text, flags=re.IGNORECASE | re.MULTILINE)
+
+    # Remove stage directions in brackets and parentheses
+    text = re.sub(r'\[.*?\]', '', text, flags=re.DOTALL)
+    text = re.sub(r'\(.*?\)', '', text, flags=re.DOTALL)
+
+    # Remove action descriptions without brackets (e.g. "Eyes narrowing slightly, voice low.")
+    text = re.sub(r'^[A-Z][a-z]+ing\s[^.]+\.\s*', '', text, flags=re.MULTILINE)
+
+    # Remove markdown
+    text = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', text)
+    text = re.sub(r'\*', '', text)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^-{2,}\s*$', '', text, flags=re.MULTILINE)  # --- dividers
+    text = re.sub(r'\\>', '', text)  # \> artifacts
+    text = re.sub(r'\|', '', text)   # lone pipe characters
+    # Catch > and >> artifacts
+    text = re.sub(r'>{1,}', '', text)
+
+    # Catch _end> and </end_of_response style tokens
+    text = re.sub(r'_end>?', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'</?end_of_response>?', '', text, flags=re.IGNORECASE)
+
+    # Catch unbracketed stage directions — lines starting with "He/She/I + verb"
+    text = re.sub(r'\b(He|She|I)\s+(pace|lean|rise|stand|pause|glance|turn|look|step|move|sit|walk)[a-z]*\s[^.!?]*[.!?]', '', text, flags=re.IGNORECASE)
+
+    # Catch narrator-style italic action lines without asterisks
+    text = re.sub(r'"[A-Z][^"]*(?:voice|eyes|hand|face|smile|gaze)[^"]*"', '', text)
+    # Normalize whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    # Remove action descriptions ending in colon — "My voice lowers to a whisper...:"
+    text = re.sub(r'\b(My|His|Her|Its)\s+\w+[^:]{0,80}:\s*', '', text, flags=re.IGNORECASE)
+
+    # Remove lines where a body part or voice action leads into quoted speech
+    text = re.sub(r'\b(voice|eyes|hands?|face|gaze|lips?|brow)\s+[^:\"]{0,60}[,:]?\s*[\""]', '"', text, flags=re.IGNORECASE)
+
+    # Remove "Final Turn:" and similar meta-labels
+    text = re.sub(r'\b(Final Turn|End Turn|Scene|Act)\s*\d*\s*:', '', text, flags=re.IGNORECASE)
+
+    # Remove possessive action openers at start of sentences
+    text = re.sub(r'(?<=[.!?]\s)(My|His|Her)\s+\w+\s+\w+s\b[^:\"]{0,80}[:,]\s*', '', text, flags=re.IGNORECASE)
+
+    return text
+
+CHARACTER_NAME_CORRECTIONS = {
+    r'\bOphelio[a-z]*\b': 'Ophelia',
+    r'\bOphelie[a-z]*\b': 'Ophelia',
+    r'\bOphelion[a-z]*\b': 'Ophelia',
+    r'\bOphelian[a-z]*\b': 'Ophelia',
+    r'\bOpheliant[a-z]*\b': 'Ophelia',
+    r'\bBanquoe?\b': 'Banquo',
+    r'\bClaudiu[a-z]+\b': 'Claudius',
+    r'\bGertrud[^e][a-z]*\b': 'Gertrude',
+    r'\bHoratio[a-z]+\b': 'Horatio',
+    r'\bLaerte[a-z]+\b': 'Laertes',
+}
+
+def _correct_character_names(text: str) -> str:
+    '''Fix hallucinated name variants back to canonical Shakespeare names.'''
+    for pattern, correct_name in CHARACTER_NAME_CORRECTIONS.items():
+        text = re.sub(pattern, correct_name, text, flags=re.IGNORECASE)
+    return text
 
 def post_processing(response, apply_shakespeare_style: bool = True) -> str:
-    ''' Placeholder for response post-processing code (such as extracting specific response). '''
-    # TODO: May want to reverse mapping to help vocabulary and response formatting to make it more Shakespearean
-    # Remove any leftover chat-template tokens and normalize whitespace.
     cleaned_response = str(response).replace("<|assistant|>", " ").replace("</s>", " ")
     cleaned_response = re.sub(r"\s+", " ", cleaned_response)
     cleaned_response = cleaned_response.strip()
 
-    # Optional style layer can be toggled by frontend request flag.
+    cleaned_response = _clean_artifacts(cleaned_response)
+    cleaned_response = _correct_character_names(cleaned_response)
+
     if apply_shakespeare_style:
         cleaned_response = _apply_shakespeare_dialogue_style(cleaned_response)
+
+    if _broke_character(cleaned_response):
+        cleaned_response = (
+            f"I know not what strange madness compels thee to speak thus. "
+            f"I am {current_character}, and shall remain so."
+        )
+
     return cleaned_response
 
 
-def generate_output(
-    question,
-    tokenizer,
-    model,
-    context=None,
-    apply_shakespeare_style: bool = True,
-) -> str:
-    ''' Main function to orchestrate LLM generation. '''
-    # Build the prompt and get the tokenized chat template
-    tokenized_chat = get_chat_template(tokenizer, question, context)
-    
-    # Generate a repsonse from the LLM and post-process it to extract the final response string
-    final_response = generate_response(
-        tokenized_chat,
-        model,
-        tokenizer,
-        apply_shakespeare_style=apply_shakespeare_style,
-    )
+def generate_output(question, tokenizer, model, context=None, apply_shakespeare_style=True) -> str:
+    sanitized_question = _sanitize_user_input(question, current_character)
+    tokenized_chat = get_chat_template(tokenizer, sanitized_question, context)
+    final_response = generate_response(tokenized_chat, model, tokenizer, apply_shakespeare_style=apply_shakespeare_style)
     add_chat_history(model_response=final_response)
     return final_response
 
