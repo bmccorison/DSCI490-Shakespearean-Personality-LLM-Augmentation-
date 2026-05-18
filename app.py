@@ -1,9 +1,17 @@
 ''' Handle fastapi endpoints for the front-end interface. '''
 
 import os
+<<<<<<< HEAD
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+=======
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+>>>>>>> 4a33dce74f7b98aee8db9ab94ad97080139dfab3
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -364,6 +372,14 @@ def generate_tts(text: str, character: str = "Hamlet", voice: str | None = None)
     return Response(content=audio_bytes, media_type=media_type)
 
 
+<<<<<<< HEAD
+=======
+FRONTEND_DIST = Path(__file__).resolve().parent / "interface" / "dist"
+if FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+
+
+>>>>>>> 4a33dce74f7b98aee8db9ab94ad97080139dfab3
 if __name__ == "__main__":
     backend_port = int(os.getenv("BACKEND_PORT", os.getenv("PORT", "8000")))
     uvicorn.run(app, host="0.0.0.0", port=backend_port)
